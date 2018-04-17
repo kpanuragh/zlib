@@ -1,0 +1,26 @@
+{
+  "name": "zlib-js",
+  "version": "1.0.0",
+  "description": "Pure javascript implementation of Zlib nodejs core module.The zlib module provides compression functionality implemented using Gzip and Deflate/Inflate.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anuraghkp1/zlib.git"
+  },
+  "keywords": [
+    "Nodejs",
+    "Core",
+    "Zlib",
+    "Gzip",
+    "compression"
+  ],
+  "author": "Anuragh K.P",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/anuraghkp1/zlib/issues"
+  },
+  "homepage": "https://github.com/anuraghkp1/zlib#readme"
+}
