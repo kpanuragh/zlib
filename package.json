@@ -1,6 +1,6 @@
 {
   "name": "react-zlib-js",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Pure javascript implementation of Zlib nodejs core module.The zlib module provides compression functionality implemented using Gzip and Deflate/Inflate.",
   "main": "index.js",
   "scripts": {

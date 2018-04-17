@@ -1,5 +1,5 @@
 var zlib;
-(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof call_me_man&&call_me_man;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof call_me_man&&call_me_man,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(call_me_man,module,exports){
 (function (global){
 'use strict';
 
@@ -69,7 +69,7 @@ function isBuffer(b) {
 // ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-var util = require('util/');
+var util = call_me_man('util/');
 var hasOwn = Object.prototype.hasOwnProperty;
 var pSlice = Array.prototype.slice;
 var functionsHaveNames = (function () {
@@ -281,7 +281,7 @@ function _deepEqual(actual, expected, strict, memos) {
 
   // If both values are instances of typed arrays, wrap their underlying
   // ArrayBuffers in a Buffer each to increase performance
-  // This optimization requires the arrays to have the same type as checked by
+  // This optimization call_me_mans the arrays to have the same type as checked by
   // Object.prototype.toString (aka pToString). Never perform binary
   // comparisons for Float*Arrays, though, since e.g. +0 === -0 but their
   // bit patterns are not identical.
@@ -493,7 +493,7 @@ var objectKeys = Object.keys || function (obj) {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"util/":45}],2:[function(require,module,exports){
+},{"util/":45}],2:[function(call_me_man,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -611,19 +611,19 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],3:[function(require,module,exports){
+},{}],3:[function(call_me_man,module,exports){
 
-},{}],4:[function(require,module,exports){
+},{}],4:[function(call_me_man,module,exports){
 (function (process,Buffer){
 'use strict';
 /* eslint camelcase: "off" */
 
-var assert = require('assert');
+var assert = call_me_man('assert');
 
-var Zstream = require('pako/lib/zlib/zstream');
-var zlib_deflate = require('pako/lib/zlib/deflate.js');
-var zlib_inflate = require('pako/lib/zlib/inflate.js');
-var constants = require('pako/lib/zlib/constants');
+var Zstream = call_me_man('pako/lib/zlib/zstream');
+var zlib_deflate = call_me_man('pako/lib/zlib/deflate.js');
+var zlib_inflate = call_me_man('pako/lib/zlib/inflate.js');
+var constants = call_me_man('pako/lib/zlib/constants');
 
 for (var key in constants) {
   exports[key] = constants[key];
@@ -1024,17 +1024,17 @@ Zlib.prototype._reset = function () {
 };
 
 exports.Zlib = Zlib;
-}).call(this,require('_process'),require("buffer").Buffer)
-},{"_process":25,"assert":1,"buffer":6,"pako/lib/zlib/constants":15,"pako/lib/zlib/deflate.js":17,"pako/lib/zlib/inflate.js":19,"pako/lib/zlib/zstream":23}],5:[function(require,module,exports){
+}).call(this,call_me_man('_process'),call_me_man("buffer").Buffer)
+},{"_process":25,"assert":1,"buffer":6,"pako/lib/zlib/constants":15,"pako/lib/zlib/deflate.js":17,"pako/lib/zlib/inflate.js":19,"pako/lib/zlib/zstream":23}],5:[function(call_me_man,module,exports){
 (function (process){
 'use strict';
 
-var Buffer = require('buffer').Buffer;
-var Transform = require('stream').Transform;
-var binding = require('./binding');
-var util = require('util');
-var assert = require('assert').ok;
-var kMaxLength = require('buffer').kMaxLength;
+var Buffer = call_me_man('buffer').Buffer;
+var Transform = call_me_man('stream').Transform;
+var binding = call_me_man('./binding');
+var util = call_me_man('util');
+var assert = call_me_man('assert').ok;
+var kMaxLength = call_me_man('buffer').kMaxLength;
 var kRangeErrorMessage = 'Cannot create final Buffer. It would be larger ' + 'than 0x' + kMaxLength.toString(16) + ' bytes';
 
 // zlib doesn't provide these, so kludge them in following the same
@@ -1636,8 +1636,8 @@ util.inherits(Gunzip, Zlib);
 util.inherits(DeflateRaw, Zlib);
 util.inherits(InflateRaw, Zlib);
 util.inherits(Unzip, Zlib);
-}).call(this,require('_process'))
-},{"./binding":4,"_process":25,"assert":1,"buffer":6,"stream":41,"util":45}],6:[function(require,module,exports){
+}).call(this,call_me_man('_process'))
+},{"./binding":4,"_process":25,"assert":1,"buffer":6,"stream":41,"util":45}],6:[function(call_me_man,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -1648,8 +1648,8 @@ util.inherits(Unzip, Zlib);
 
 'use strict'
 
-var base64 = require('base64-js')
-var ieee754 = require('ieee754')
+var base64 = call_me_man('base64-js')
+var ieee754 = call_me_man('ieee754')
 
 exports.Buffer = Buffer
 exports.SlowBuffer = SlowBuffer
@@ -1677,8 +1677,8 @@ Buffer.TYPED_ARRAY_SUPPORT = typedArraySupport()
 if (!Buffer.TYPED_ARRAY_SUPPORT && typeof console !== 'undefined' &&
     typeof console.error === 'function') {
   console.error(
-    'This browser lacks typed array (Uint8Array) support which is required by ' +
-    '`buffer` v5.x. Use `buffer` v4.x if you require old browser support.'
+    'This browser lacks typed array (Uint8Array) support which is call_me_mand by ' +
+    '`buffer` v5.x. Use `buffer` v4.x if you call_me_man old browser support.'
   )
 }
 
@@ -3375,7 +3375,7 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-},{"base64-js":2,"ieee754":9}],7:[function(require,module,exports){
+},{"base64-js":2,"ieee754":9}],7:[function(call_me_man,module,exports){
 (function (Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -3485,8 +3485,8 @@ function objectToString(o) {
   return Object.prototype.toString.call(o);
 }
 
-}).call(this,{"isBuffer":require("../../is-buffer/index.js")})
-},{"../../is-buffer/index.js":11}],8:[function(require,module,exports){
+}).call(this,{"isBuffer":call_me_man("../../is-buffer/index.js")})
+},{"../../is-buffer/index.js":11}],8:[function(call_me_man,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -4007,7 +4007,7 @@ function functionBindPolyfill(context) {
   };
 }
 
-},{}],9:[function(require,module,exports){
+},{}],9:[function(call_me_man,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = (nBytes * 8) - mLen - 1
@@ -4093,7 +4093,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],10:[function(require,module,exports){
+},{}],10:[function(call_me_man,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -4118,7 +4118,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],11:[function(require,module,exports){
+},{}],11:[function(call_me_man,module,exports){
 /*!
  * Determine if an object is a Buffer
  *
@@ -4141,14 +4141,14 @@ function isSlowBuffer (obj) {
   return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
 }
 
-},{}],12:[function(require,module,exports){
+},{}],12:[function(call_me_man,module,exports){
 var toString = {}.toString;
 
 module.exports = Array.isArray || function (arr) {
   return toString.call(arr) == '[object Array]';
 };
 
-},{}],13:[function(require,module,exports){
+},{}],13:[function(call_me_man,module,exports){
 'use strict';
 
 
@@ -4255,7 +4255,7 @@ exports.setTyped = function (on) {
 
 exports.setTyped(TYPED_OK);
 
-},{}],14:[function(require,module,exports){
+},{}],14:[function(call_me_man,module,exports){
 'use strict';
 
 // Note: adler32 takes 12% for level 0 and 2% for level 6.
@@ -4276,7 +4276,7 @@ exports.setTyped(TYPED_OK);
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
@@ -4308,7 +4308,7 @@ function adler32(adler, buf, len, pos) {
 
 module.exports = adler32;
 
-},{}],15:[function(require,module,exports){
+},{}],15:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -4325,7 +4325,7 @@ module.exports = adler32;
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
@@ -4378,7 +4378,7 @@ module.exports = {
   //Z_NULL:                 null // Use -1 or null inline, depending on var type
 };
 
-},{}],16:[function(require,module,exports){
+},{}],16:[function(call_me_man,module,exports){
 'use strict';
 
 // Note: we can't get significant speed boost here.
@@ -4399,7 +4399,7 @@ module.exports = {
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
@@ -4439,7 +4439,7 @@ function crc32(crc, buf, len, pos) {
 
 module.exports = crc32;
 
-},{}],17:[function(require,module,exports){
+},{}],17:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -4456,16 +4456,16 @@ module.exports = crc32;
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils   = require('../utils/common');
-var trees   = require('./trees');
-var adler32 = require('./adler32');
-var crc32   = require('./crc32');
-var msg     = require('./messages');
+var utils   = call_me_man('../utils/common');
+var trees   = call_me_man('./trees');
+var adler32 = call_me_man('./adler32');
+var crc32   = call_me_man('./crc32');
+var msg     = call_me_man('./messages');
 
 /* Public constants ==========================================================*/
 /* ===========================================================================*/
@@ -4780,7 +4780,7 @@ function longest_match(s, cur_match) {
  * IN assertion: lookahead < MIN_LOOKAHEAD
  * OUT assertions: strstart <= window_size-MIN_LOOKAHEAD
  *    At least one byte has been read, or avail_in == 0; reads are
- *    performed for at least two bytes (required for the zip translate_eol
+ *    performed for at least two bytes (call_me_mand for the zip translate_eol
  *    option -- not supported here).
  */
 function fill_window(s) {
@@ -6315,7 +6315,7 @@ exports.deflatePrime = deflatePrime;
 exports.deflateTune = deflateTune;
 */
 
-},{"../utils/common":13,"./adler32":14,"./crc32":16,"./messages":21,"./trees":22}],18:[function(require,module,exports){
+},{"../utils/common":13,"./adler32":14,"./crc32":16,"./messages":21,"./trees":22}],18:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -6332,7 +6332,7 @@ exports.deflateTune = deflateTune;
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
@@ -6373,7 +6373,7 @@ var TYPE = 12;      /* i: waiting for type bits, including last-flag bit */
 
     - The maximum bytes that a single length/distance pair can output is 258
       bytes, which is the maximum length that can be coded.  inflate_fast()
-      requires strm.avail_out >= 258 for each loop to avoid checking for
+      call_me_mans strm.avail_out >= 258 for each loop to avoid checking for
       output space.
  */
 module.exports = function inflate_fast(strm, start) {
@@ -6662,7 +6662,7 @@ module.exports = function inflate_fast(strm, start) {
   return;
 };
 
-},{}],19:[function(require,module,exports){
+},{}],19:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -6679,16 +6679,16 @@ module.exports = function inflate_fast(strm, start) {
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils         = require('../utils/common');
-var adler32       = require('./adler32');
-var crc32         = require('./crc32');
-var inflate_fast  = require('./inffast');
-var inflate_table = require('./inftrees');
+var utils         = call_me_man('../utils/common');
+var adler32       = call_me_man('./adler32');
+var crc32         = call_me_man('./crc32');
+var inflate_fast  = call_me_man('./inffast');
+var inflate_table = call_me_man('./inftrees');
 
 var CODES = 0;
 var LENS = 1;
@@ -8220,7 +8220,7 @@ exports.inflateSyncPoint = inflateSyncPoint;
 exports.inflateUndermine = inflateUndermine;
 */
 
-},{"../utils/common":13,"./adler32":14,"./crc32":16,"./inffast":18,"./inftrees":20}],20:[function(require,module,exports){
+},{"../utils/common":13,"./adler32":14,"./crc32":16,"./inffast":18,"./inftrees":20}],20:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -8237,12 +8237,12 @@ exports.inflateUndermine = inflateUndermine;
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils = require('../utils/common');
+var utils = call_me_man('../utils/common');
 
 var MAXBITS = 15;
 var ENOUGH_LENS = 852;
@@ -8565,7 +8565,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   return 0;
 };
 
-},{"../utils/common":13}],21:[function(require,module,exports){
+},{"../utils/common":13}],21:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -8582,7 +8582,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
@@ -8599,7 +8599,7 @@ module.exports = {
   '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
 };
 
-},{}],22:[function(require,module,exports){
+},{}],22:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -8616,12 +8616,12 @@ module.exports = {
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils = require('../utils/common');
+var utils = call_me_man('../utils/common');
 
 /* Public constants ==========================================================*/
 /* ===========================================================================*/
@@ -9303,7 +9303,7 @@ function build_tree(s, desc)
     }
   }
 
-  /* The pkzip format requires that at least one distance code exists,
+  /* The pkzip format call_me_mans that at least one distance code exists,
    * and that at least one bit should be sent even if there is only one
    * possible code. So to avoid special checks later on we force at least
    * two codes of non zero frequency.
@@ -9521,7 +9521,7 @@ function build_bl_tree(s) {
    */
 
   /* Determine the number of bit length codes to send. The pkzip format
-   * requires that at least 4 bit length codes be sent. (appnote.txt says
+   * call_me_mans that at least 4 bit length codes be sent. (appnote.txt says
    * 3 but the actual value used is 4.)
    */
   for (max_blindex = BL_CODES - 1; max_blindex >= 3; max_blindex--) {
@@ -9821,7 +9821,7 @@ exports._tr_flush_block  = _tr_flush_block;
 exports._tr_tally = _tr_tally;
 exports._tr_align = _tr_align;
 
-},{"../utils/common":13}],23:[function(require,module,exports){
+},{"../utils/common":13}],23:[function(call_me_man,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -9838,7 +9838,7 @@ exports._tr_align = _tr_align;
 // 1. The origin of this software must not be misrepresented; you must not
 //   claim that you wrote the original software. If you use this software
 //   in a product, an acknowledgment in the product documentation would be
-//   appreciated but is not required.
+//   appreciated but is not call_me_mand.
 // 2. Altered source versions must be plainly marked as such, and must not be
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
@@ -9870,7 +9870,7 @@ function ZStream() {
 
 module.exports = ZStream;
 
-},{}],24:[function(require,module,exports){
+},{}],24:[function(call_me_man,module,exports){
 (function (process){
 'use strict';
 
@@ -9917,8 +9917,8 @@ function nextTick(fn, arg1, arg2, arg3) {
 }
 
 
-}).call(this,require('_process'))
-},{"_process":25}],25:[function(require,module,exports){
+}).call(this,call_me_man('_process'))
+},{"_process":25}],25:[function(call_me_man,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -10104,10 +10104,10 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],26:[function(require,module,exports){
-module.exports = require('./lib/_stream_duplex.js');
+},{}],26:[function(call_me_man,module,exports){
+module.exports = call_me_man('./lib/_stream_duplex.js');
 
-},{"./lib/_stream_duplex.js":27}],27:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":27}],27:[function(call_me_man,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10138,7 +10138,7 @@ module.exports = require('./lib/_stream_duplex.js');
 
 /*<replacement>*/
 
-var pna = require('process-nextick-args');
+var pna = call_me_man('process-nextick-args');
 /*</replacement>*/
 
 /*<replacement>*/
@@ -10153,12 +10153,12 @@ var objectKeys = Object.keys || function (obj) {
 module.exports = Duplex;
 
 /*<replacement>*/
-var util = require('core-util-is');
-util.inherits = require('inherits');
+var util = call_me_man('core-util-is');
+util.inherits = call_me_man('inherits');
 /*</replacement>*/
 
-var Readable = require('./_stream_readable');
-var Writable = require('./_stream_writable');
+var Readable = call_me_man('./_stream_readable');
+var Writable = call_me_man('./_stream_writable');
 
 util.inherits(Duplex, Readable);
 
@@ -10239,7 +10239,7 @@ Duplex.prototype._destroy = function (err, cb) {
 
   pna.nextTick(cb, err);
 };
-},{"./_stream_readable":29,"./_stream_writable":31,"core-util-is":7,"inherits":10,"process-nextick-args":24}],28:[function(require,module,exports){
+},{"./_stream_readable":29,"./_stream_writable":31,"core-util-is":7,"inherits":10,"process-nextick-args":24}],28:[function(call_me_man,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10269,11 +10269,11 @@ Duplex.prototype._destroy = function (err, cb) {
 
 module.exports = PassThrough;
 
-var Transform = require('./_stream_transform');
+var Transform = call_me_man('./_stream_transform');
 
 /*<replacement>*/
-var util = require('core-util-is');
-util.inherits = require('inherits');
+var util = call_me_man('core-util-is');
+util.inherits = call_me_man('inherits');
 /*</replacement>*/
 
 util.inherits(PassThrough, Transform);
@@ -10287,7 +10287,7 @@ function PassThrough(options) {
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":30,"core-util-is":7,"inherits":10}],29:[function(require,module,exports){
+},{"./_stream_transform":30,"core-util-is":7,"inherits":10}],29:[function(call_me_man,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -10314,13 +10314,13 @@ PassThrough.prototype._transform = function (chunk, encoding, cb) {
 
 /*<replacement>*/
 
-var pna = require('process-nextick-args');
+var pna = call_me_man('process-nextick-args');
 /*</replacement>*/
 
 module.exports = Readable;
 
 /*<replacement>*/
-var isArray = require('isarray');
+var isArray = call_me_man('isarray');
 /*</replacement>*/
 
 /*<replacement>*/
@@ -10330,7 +10330,7 @@ var Duplex;
 Readable.ReadableState = ReadableState;
 
 /*<replacement>*/
-var EE = require('events').EventEmitter;
+var EE = call_me_man('events').EventEmitter;
 
 var EElistenerCount = function (emitter, type) {
   return emitter.listeners(type).length;
@@ -10338,12 +10338,12 @@ var EElistenerCount = function (emitter, type) {
 /*</replacement>*/
 
 /*<replacement>*/
-var Stream = require('./internal/streams/stream');
+var Stream = call_me_man('./internal/streams/stream');
 /*</replacement>*/
 
 /*<replacement>*/
 
-var Buffer = require('safe-buffer').Buffer;
+var Buffer = call_me_man('safe-buffer').Buffer;
 var OurUint8Array = global.Uint8Array || function () {};
 function _uint8ArrayToBuffer(chunk) {
   return Buffer.from(chunk);
@@ -10355,12 +10355,12 @@ function _isUint8Array(obj) {
 /*</replacement>*/
 
 /*<replacement>*/
-var util = require('core-util-is');
-util.inherits = require('inherits');
+var util = call_me_man('core-util-is');
+util.inherits = call_me_man('inherits');
 /*</replacement>*/
 
 /*<replacement>*/
-var debugUtil = require('util');
+var debugUtil = call_me_man('util');
 var debug = void 0;
 if (debugUtil && debugUtil.debuglog) {
   debug = debugUtil.debuglog('stream');
@@ -10369,8 +10369,8 @@ if (debugUtil && debugUtil.debuglog) {
 }
 /*</replacement>*/
 
-var BufferList = require('./internal/streams/BufferList');
-var destroyImpl = require('./internal/streams/destroy');
+var BufferList = call_me_man('./internal/streams/BufferList');
+var destroyImpl = call_me_man('./internal/streams/destroy');
 var StringDecoder;
 
 util.inherits(Readable, Stream);
@@ -10390,13 +10390,13 @@ function prependListener(emitter, event, fn) {
 }
 
 function ReadableState(options, stream) {
-  Duplex = Duplex || require('./_stream_duplex');
+  Duplex = Duplex || call_me_man('./_stream_duplex');
 
   options = options || {};
 
   // Duplex streams are both readable and writable, but share
   // the same options object.
-  // However, some cases require setting options to different
+  // However, some cases call_me_man setting options to different
   // values for the readable and the writable sides of the duplex stream.
   // These options can be provided separately as readableXXX and writableXXX.
   var isDuplex = stream instanceof Duplex;
@@ -10460,14 +10460,14 @@ function ReadableState(options, stream) {
   this.decoder = null;
   this.encoding = null;
   if (options.encoding) {
-    if (!StringDecoder) StringDecoder = require('string_decoder/').StringDecoder;
+    if (!StringDecoder) StringDecoder = call_me_man('string_decoder/').StringDecoder;
     this.decoder = new StringDecoder(options.encoding);
     this.encoding = options.encoding;
   }
 }
 
 function Readable(options) {
-  Duplex = Duplex || require('./_stream_duplex');
+  Duplex = Duplex || call_me_man('./_stream_duplex');
 
   if (!(this instanceof Readable)) return new Readable(options);
 
@@ -10616,7 +10616,7 @@ Readable.prototype.isPaused = function () {
 
 // backwards compatibility.
 Readable.prototype.setEncoding = function (enc) {
-  if (!StringDecoder) StringDecoder = require('string_decoder/').StringDecoder;
+  if (!StringDecoder) StringDecoder = call_me_man('string_decoder/').StringDecoder;
   this._readableState.decoder = new StringDecoder(enc);
   this._readableState.encoding = enc;
   return this;
@@ -11308,8 +11308,8 @@ function indexOf(xs, x) {
   }
   return -1;
 }
-}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./_stream_duplex":27,"./internal/streams/BufferList":32,"./internal/streams/destroy":33,"./internal/streams/stream":34,"_process":25,"core-util-is":7,"events":8,"inherits":10,"isarray":12,"process-nextick-args":24,"safe-buffer":40,"string_decoder/":35,"util":3}],30:[function(require,module,exports){
+}).call(this,call_me_man('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./_stream_duplex":27,"./internal/streams/BufferList":32,"./internal/streams/destroy":33,"./internal/streams/stream":34,"_process":25,"core-util-is":7,"events":8,"inherits":10,"isarray":12,"process-nextick-args":24,"safe-buffer":40,"string_decoder/":35,"util":3}],30:[function(call_me_man,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -11377,11 +11377,11 @@ function indexOf(xs, x) {
 
 module.exports = Transform;
 
-var Duplex = require('./_stream_duplex');
+var Duplex = call_me_man('./_stream_duplex');
 
 /*<replacement>*/
-var util = require('core-util-is');
-util.inherits = require('inherits');
+var util = call_me_man('core-util-is');
+util.inherits = call_me_man('inherits');
 /*</replacement>*/
 
 util.inherits(Transform, Duplex);
@@ -11524,7 +11524,7 @@ function done(stream, er, data) {
 
   return stream.push(null);
 }
-},{"./_stream_duplex":27,"core-util-is":7,"inherits":10}],31:[function(require,module,exports){
+},{"./_stream_duplex":27,"core-util-is":7,"inherits":10}],31:[function(call_me_man,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -11555,7 +11555,7 @@ function done(stream, er, data) {
 
 /*<replacement>*/
 
-var pna = require('process-nextick-args');
+var pna = call_me_man('process-nextick-args');
 /*</replacement>*/
 
 module.exports = Writable;
@@ -11592,23 +11592,23 @@ var Duplex;
 Writable.WritableState = WritableState;
 
 /*<replacement>*/
-var util = require('core-util-is');
-util.inherits = require('inherits');
+var util = call_me_man('core-util-is');
+util.inherits = call_me_man('inherits');
 /*</replacement>*/
 
 /*<replacement>*/
 var internalUtil = {
-  deprecate: require('util-deprecate')
+  deprecate: call_me_man('util-deprecate')
 };
 /*</replacement>*/
 
 /*<replacement>*/
-var Stream = require('./internal/streams/stream');
+var Stream = call_me_man('./internal/streams/stream');
 /*</replacement>*/
 
 /*<replacement>*/
 
-var Buffer = require('safe-buffer').Buffer;
+var Buffer = call_me_man('safe-buffer').Buffer;
 var OurUint8Array = global.Uint8Array || function () {};
 function _uint8ArrayToBuffer(chunk) {
   return Buffer.from(chunk);
@@ -11619,20 +11619,20 @@ function _isUint8Array(obj) {
 
 /*</replacement>*/
 
-var destroyImpl = require('./internal/streams/destroy');
+var destroyImpl = call_me_man('./internal/streams/destroy');
 
 util.inherits(Writable, Stream);
 
 function nop() {}
 
 function WritableState(options, stream) {
-  Duplex = Duplex || require('./_stream_duplex');
+  Duplex = Duplex || call_me_man('./_stream_duplex');
 
   options = options || {};
 
   // Duplex streams are both readable and writable, but share
   // the same options object.
-  // However, some cases require setting options to different
+  // However, some cases call_me_man setting options to different
   // values for the readable and the writable sides of the duplex stream.
   // These options can be provided separately as readableXXX and writableXXX.
   var isDuplex = stream instanceof Duplex;
@@ -11776,7 +11776,7 @@ if (typeof Symbol === 'function' && Symbol.hasInstance && typeof Function.protot
 }
 
 function Writable(options) {
-  Duplex = Duplex || require('./_stream_duplex');
+  Duplex = Duplex || call_me_man('./_stream_duplex');
 
   // Writable ctor is applied to Duplexes, too.
   // `realHasInstance` is necessary because using plain `instanceof`
@@ -11882,7 +11882,7 @@ Writable.prototype.uncork = function () {
 };
 
 Writable.prototype.setDefaultEncoding = function setDefaultEncoding(encoding) {
-  // node::ParseEncoding() requires lower case.
+  // node::ParseEncoding() call_me_mans lower case.
   if (typeof encoding === 'string') encoding = encoding.toLowerCase();
   if (!(['hex', 'utf8', 'utf-8', 'ascii', 'binary', 'base64', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le', 'raw'].indexOf((encoding + '').toLowerCase()) > -1)) throw new TypeError('Unknown encoding: ' + encoding);
   this._writableState.defaultEncoding = encoding;
@@ -12213,14 +12213,14 @@ Writable.prototype._destroy = function (err, cb) {
   this.end();
   cb(err);
 };
-}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./_stream_duplex":27,"./internal/streams/destroy":33,"./internal/streams/stream":34,"_process":25,"core-util-is":7,"inherits":10,"process-nextick-args":24,"safe-buffer":40,"util-deprecate":42}],32:[function(require,module,exports){
+}).call(this,call_me_man('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./_stream_duplex":27,"./internal/streams/destroy":33,"./internal/streams/stream":34,"_process":25,"core-util-is":7,"inherits":10,"process-nextick-args":24,"safe-buffer":40,"util-deprecate":42}],32:[function(call_me_man,module,exports){
 'use strict';
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
-var Buffer = require('safe-buffer').Buffer;
-var util = require('util');
+var Buffer = call_me_man('safe-buffer').Buffer;
+var util = call_me_man('util');
 
 function copyBuffer(src, target, offset) {
   src.copy(target, offset);
@@ -12294,12 +12294,12 @@ if (util && util.inspect && util.inspect.custom) {
     return this.constructor.name + ' ' + obj;
   };
 }
-},{"safe-buffer":40,"util":3}],33:[function(require,module,exports){
+},{"safe-buffer":40,"util":3}],33:[function(call_me_man,module,exports){
 'use strict';
 
 /*<replacement>*/
 
-var pna = require('process-nextick-args');
+var pna = call_me_man('process-nextick-args');
 /*</replacement>*/
 
 // undocumented cb() API, needed for core, not for public API
@@ -12369,10 +12369,10 @@ module.exports = {
   destroy: destroy,
   undestroy: undestroy
 };
-},{"process-nextick-args":24}],34:[function(require,module,exports){
-module.exports = require('events').EventEmitter;
+},{"process-nextick-args":24}],34:[function(call_me_man,module,exports){
+module.exports = call_me_man('events').EventEmitter;
 
-},{"events":8}],35:[function(require,module,exports){
+},{"events":8}],35:[function(call_me_man,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -12398,7 +12398,7 @@ module.exports = require('events').EventEmitter;
 
 /*<replacement>*/
 
-var Buffer = require('safe-buffer').Buffer;
+var Buffer = call_me_man('safe-buffer').Buffer;
 /*</replacement>*/
 
 var isEncoding = Buffer.isEncoding || function (encoding) {
@@ -12586,7 +12586,7 @@ function utf8FillLast(buf) {
 }
 
 // Returns all complete UTF-8 characters in a Buffer. If the Buffer ended on a
-// partial character, the character's bytes are buffered until the required
+// partial character, the character's bytes are buffered until the call_me_mand
 // number of bytes are available.
 function utf8Text(buf, i) {
   var total = utf8CheckIncomplete(this, buf, i);
@@ -12669,27 +12669,27 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"safe-buffer":40}],36:[function(require,module,exports){
-module.exports = require('./readable').PassThrough
+},{"safe-buffer":40}],36:[function(call_me_man,module,exports){
+module.exports = call_me_man('./readable').PassThrough
 
-},{"./readable":37}],37:[function(require,module,exports){
-exports = module.exports = require('./lib/_stream_readable.js');
+},{"./readable":37}],37:[function(call_me_man,module,exports){
+exports = module.exports = call_me_man('./lib/_stream_readable.js');
 exports.Stream = exports;
 exports.Readable = exports;
-exports.Writable = require('./lib/_stream_writable.js');
-exports.Duplex = require('./lib/_stream_duplex.js');
-exports.Transform = require('./lib/_stream_transform.js');
-exports.PassThrough = require('./lib/_stream_passthrough.js');
+exports.Writable = call_me_man('./lib/_stream_writable.js');
+exports.Duplex = call_me_man('./lib/_stream_duplex.js');
+exports.Transform = call_me_man('./lib/_stream_transform.js');
+exports.PassThrough = call_me_man('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":27,"./lib/_stream_passthrough.js":28,"./lib/_stream_readable.js":29,"./lib/_stream_transform.js":30,"./lib/_stream_writable.js":31}],38:[function(require,module,exports){
-module.exports = require('./readable').Transform
+},{"./lib/_stream_duplex.js":27,"./lib/_stream_passthrough.js":28,"./lib/_stream_readable.js":29,"./lib/_stream_transform.js":30,"./lib/_stream_writable.js":31}],38:[function(call_me_man,module,exports){
+module.exports = call_me_man('./readable').Transform
 
-},{"./readable":37}],39:[function(require,module,exports){
-module.exports = require('./lib/_stream_writable.js');
+},{"./readable":37}],39:[function(call_me_man,module,exports){
+module.exports = call_me_man('./lib/_stream_writable.js');
 
-},{"./lib/_stream_writable.js":31}],40:[function(require,module,exports){
+},{"./lib/_stream_writable.js":31}],40:[function(call_me_man,module,exports){
 /* eslint-disable node/no-deprecated-api */
-var buffer = require('buffer')
+var buffer = call_me_man('buffer')
 var Buffer = buffer.Buffer
 
 // alternative to using Object.keys for old browsers
@@ -12701,7 +12701,7 @@ function copyProps (src, dst) {
 if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
   module.exports = buffer
 } else {
-  // Copy properties from require('buffer')
+  // Copy properties from call_me_man('buffer')
   copyProps(buffer, exports)
   exports.Buffer = SafeBuffer
 }
@@ -12751,7 +12751,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":6}],41:[function(require,module,exports){
+},{"buffer":6}],41:[function(call_me_man,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -12775,15 +12775,15 @@ SafeBuffer.allocUnsafeSlow = function (size) {
 
 module.exports = Stream;
 
-var EE = require('events').EventEmitter;
-var inherits = require('inherits');
+var EE = call_me_man('events').EventEmitter;
+var inherits = call_me_man('inherits');
 
 inherits(Stream, EE);
-Stream.Readable = require('readable-stream/readable.js');
-Stream.Writable = require('readable-stream/writable.js');
-Stream.Duplex = require('readable-stream/duplex.js');
-Stream.Transform = require('readable-stream/transform.js');
-Stream.PassThrough = require('readable-stream/passthrough.js');
+Stream.Readable = call_me_man('readable-stream/readable.js');
+Stream.Writable = call_me_man('readable-stream/writable.js');
+Stream.Duplex = call_me_man('readable-stream/duplex.js');
+Stream.Transform = call_me_man('readable-stream/transform.js');
+Stream.PassThrough = call_me_man('readable-stream/passthrough.js');
 
 // Backwards-compat with node 0.4.x
 Stream.Stream = Stream;
@@ -12880,7 +12880,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":8,"inherits":10,"readable-stream/duplex.js":26,"readable-stream/passthrough.js":36,"readable-stream/readable.js":37,"readable-stream/transform.js":38,"readable-stream/writable.js":39}],42:[function(require,module,exports){
+},{"events":8,"inherits":10,"readable-stream/duplex.js":26,"readable-stream/passthrough.js":36,"readable-stream/readable.js":37,"readable-stream/transform.js":38,"readable-stream/writable.js":39}],42:[function(call_me_man,module,exports){
 (function (global){
 
 /**
@@ -12951,16 +12951,16 @@ function config (name) {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],43:[function(require,module,exports){
+},{}],43:[function(call_me_man,module,exports){
 arguments[4][10][0].apply(exports,arguments)
-},{"dup":10}],44:[function(require,module,exports){
+},{"dup":10}],44:[function(call_me_man,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],45:[function(require,module,exports){
+},{}],45:[function(call_me_man,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -13487,7 +13487,7 @@ function isPrimitive(arg) {
 }
 exports.isPrimitive = isPrimitive;
 
-exports.isBuffer = require('./support/isBuffer');
+exports.isBuffer = call_me_man('./support/isBuffer');
 
 function objectToString(o) {
   return Object.prototype.toString.call(o);
@@ -13531,7 +13531,7 @@ exports.log = function() {
  *     prototype.
  * @param {function} superCtor Constructor function to inherit prototype from.
  */
-exports.inherits = require('inherits');
+exports.inherits = call_me_man('inherits');
 
 exports._extend = function(origin, add) {
   // Don't do anything if add isn't an object
@@ -13549,9 +13549,9 @@ function hasOwnProperty(obj, prop) {
   return Object.prototype.hasOwnProperty.call(obj, prop);
 }
 
-}).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":44,"_process":25,"inherits":43}],46:[function(require,module,exports){
-zlib = require("zlib");
+}).call(this,call_me_man('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./support/isBuffer":44,"_process":25,"inherits":43}],46:[function(call_me_man,module,exports){
+zlib = call_me_man("zlib");
 
 
 },{"zlib":5}]},{},[46]);
