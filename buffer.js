@@ -1947,4 +1947,4 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
 
 }).call(this,call_me_man("buffer").Buffer)
 },{"buffer":2}]},{},[4]);
-module.exports = Buffer;
+module.exports = buffer;
