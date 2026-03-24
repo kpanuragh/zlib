@@ -19233,6 +19233,16 @@ exports.unzip = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new Unzip(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
   return zlibBuffer(new Unzip(opts), buffer, callback);
 };
 
