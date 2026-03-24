@@ -605,3 +605,62 @@ function printSummary() {
   console.log('  - Compression levels (0-9)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 }
+
+// ============================================
+// Promise-Based API Tests
+// ============================================
+
+(async function testGzipPromise() {
+  try {
+    const compressed = await zlib.gzip('Hello, World!');
+    assert(Buffer.isBuffer(compressed), 'gzip promise should return Buffer');
+    assert(compressed.length > 0, 'compressed should not be empty');
+    console.log('✓ gzip promise resolves with Buffer');
+  } catch (err) {
+    console.error('✗ gzip promise failed:', err.message);
+  }
+})();
+
+(async function testGzipWithOptions() {
+  try {
+    const fast = await zlib.gzip('Hello, World!', { level: 1 });
+    const best = await zlib.gzip('Hello, World!', { level: 9 });
+    assert(Buffer.isBuffer(fast), 'fast should be Buffer');
+    assert(Buffer.isBuffer(best), 'best should be Buffer');
+    console.log('✓ gzip promise with options works');
+  } catch (err) {
+    console.error('✗ gzip promise with options failed:', err.message);
+  }
+})();
+
+(async function testGunzipPromise() {
+  try {
+    const original = 'Hello, World!';
+    const compressed = await zlib.gzip(original);
+    const decompressed = await zlib.gunzip(compressed);
+    assert(decompressed.toString() === original, 'gunzip should decompress correctly');
+    console.log('✓ gunzip promise resolves correctly');
+  } catch (err) {
+    console.error('✗ gunzip promise failed:', err.message);
+  }
+})();
+
+(async function testGzipRejectNull() {
+  try {
+    await zlib.gzip(null);
+    console.error('✗ gzip promise should reject on null input');
+  } catch (err) {
+    assert(err instanceof Error, 'should throw Error');
+    console.log('✓ gzip promise rejects on null input');
+  }
+})();
+
+(async function testGunzipRejectInvalid() {
+  try {
+    await zlib.gunzip(Buffer.from('invalid'));
+    console.error('✗ gunzip promise should reject on invalid data');
+  } catch (err) {
+    assert(err instanceof Error, 'should throw Error');
+    console.log('✓ gunzip promise rejects on invalid data');
+  }
+})();
