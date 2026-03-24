@@ -178,6 +178,18 @@ exports.deflateRaw = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  // Return promise if no callback provided
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new DeflateRaw(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return zlibBuffer(new DeflateRaw(opts), buffer, callback);
 };
 
@@ -250,6 +262,18 @@ exports.inflateRaw = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  // Return promise if no callback provided
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new InflateRaw(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return zlibBuffer(new InflateRaw(opts), buffer, callback);
 };
 
