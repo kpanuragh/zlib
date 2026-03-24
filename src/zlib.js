@@ -130,6 +130,18 @@ exports.deflate = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  // Return promise if no callback provided
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new Deflate(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return zlibBuffer(new Deflate(opts), buffer, callback);
 };
 
@@ -190,6 +202,18 @@ exports.inflate = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  // Return promise if no callback provided
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new Inflate(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return zlibBuffer(new Inflate(opts), buffer, callback);
 };
 
