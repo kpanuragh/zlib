@@ -297,6 +297,17 @@ exports.brotliCompress = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      brotliBuffer(new BrotliCompress(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return brotliBuffer(new BrotliCompress(opts), buffer, callback);
 };
 
@@ -309,6 +320,17 @@ exports.brotliDecompress = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      brotliBuffer(new BrotliDecompress(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return brotliBuffer(new BrotliDecompress(opts), buffer, callback);
 };
 
