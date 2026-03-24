@@ -12,6 +12,7 @@ Pure JavaScript implementation of Node.js `zlib` module for React Native, browse
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Promise-Based API](#promise-based-api)
 - [API Reference](#api-reference)
   - [Convenience Methods (Async)](#convenience-methods-async)
   - [Convenience Methods (Sync)](#convenience-methods-sync)
@@ -91,6 +92,71 @@ console.log(brotliDecompressed.toString()); // 'Hello, World!'
 
 const checksum = zlib.crc32('Hello, World!');
 console.log(checksum); // 3957769958
+```
+
+## Promise-Based API
+
+All async methods now support both promises and callbacks, allowing you to use modern async/await syntax without manual promise wrapping.
+
+### Using async/await
+
+```javascript
+const zlib = require('react-zlib-js');
+
+async function compress() {
+  try {
+    const data = 'Hello, World!';
+
+    // Gzip compression with async/await
+    const compressed = await zlib.gzip(data);
+    const decompressed = await zlib.gunzip(compressed);
+    console.log(decompressed.toString()); // 'Hello, World!'
+
+    // With compression level
+    const fast = await zlib.gzip(data, { level: 1 });
+    const best = await zlib.gzip(data, { level: 9 });
+
+    // Brotli compression
+    const brotli = await zlib.brotliCompress(data);
+    const unbrotli = await zlib.brotliDecompress(brotli);
+
+  } catch (err) {
+    console.error('Compression failed:', err);
+  }
+}
+
+compress();
+```
+
+### Both patterns work together
+
+You can mix promises and callbacks in the same codebase:
+
+```javascript
+const zlib = require('react-zlib-js');
+
+async function mixedPatterns() {
+  // Promise pattern with async/await
+  const compressed = await zlib.gzip('data');
+
+  // Callback pattern still works
+  zlib.gzip('data', (err, result) => {
+    if (err) console.error(err);
+    else console.log(result);
+  });
+
+  // Mix both patterns in the same code
+  try {
+    const compressed = await zlib.gzip('data');
+    zlib.deflate('data', (err, result) => {
+      // both work together seamlessly
+    });
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+mixedPatterns();
 ```
 
 ## API Reference
@@ -653,6 +719,55 @@ const match = Buffer.compare(binaryData, decompressed) === 0;
 console.log('Binary data preserved:', match);
 console.log('Original:', binaryData.length, 'bytes');
 console.log('Compressed:', compressed.length, 'bytes');
+```
+
+### Compression with Promises
+
+Using async/await with promise-based API for cleaner, more readable code:
+
+```javascript
+const zlib = require('react-zlib-js');
+
+async function demonstratePromises() {
+  const original = 'Hello, World! This is a test string for compression.';
+
+  try {
+    // Gzip with promise
+    const gzipped = await zlib.gzip(original);
+    const ungzipped = await zlib.gunzip(gzipped);
+    console.log('Gzip match:', ungzipped.toString() === original);
+
+    // Deflate with promise
+    const deflated = await zlib.deflate(original);
+    const inflated = await zlib.inflate(deflated);
+    console.log('Deflate match:', inflated.toString() === original);
+
+    // DeflateRaw with promise
+    const deflateRaw = await zlib.deflateRaw(original);
+    const inflateRaw = await zlib.inflateRaw(deflateRaw);
+    console.log('DeflateRaw match:', inflateRaw.toString() === original);
+
+    // Brotli with promise
+    const brotlied = await zlib.brotliCompress(original);
+    const unbrotlied = await zlib.brotliDecompress(brotlied);
+    console.log('Brotli match:', unbrotlied.toString() === original);
+
+    // Unzip with auto-detection
+    const unzipped = await zlib.unzip(gzipped);
+    console.log('Auto-detect match:', unzipped.toString() === original);
+
+    // With compression level options
+    const compressed1 = await zlib.gzip(original, { level: 1 }); // Fast
+    const compressed9 = await zlib.gzip(original, { level: 9 }); // Best
+    console.log('Fast compression:', compressed1.length, 'bytes');
+    console.log('Best compression:', compressed9.length, 'bytes');
+
+  } catch (err) {
+    console.error('Compression error:', err.message);
+  }
+}
+
+demonstratePromises();
 ```
 
 ### Auto-detect Decompression with Unzip
