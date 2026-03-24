@@ -19173,6 +19173,18 @@ exports.gzip = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  // Return promise if no callback provided
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new Gzip(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return zlibBuffer(new Gzip(opts), buffer, callback);
 };
 
@@ -19221,6 +19233,18 @@ exports.gunzip = function (buffer, opts, callback) {
     callback = opts;
     opts = {};
   }
+
+  // Return promise if no callback provided
+  if (!callback) {
+    return new Promise((resolve, reject) => {
+      zlibBuffer(new Gunzip(opts), buffer, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  }
+
+  // Use callback mode (existing behavior)
   return zlibBuffer(new Gunzip(opts), buffer, callback);
 };
 
