@@ -43,3 +43,16 @@ zlib.gunzipSync(untrusted, { maxOutputLength: 10 * 1024 * 1024 });
 
 Note that Zstd compression is not implemented and throws by design; that is a
 documented limitation, not a vulnerability.
+
+## Dependency advisories
+
+`npm audit --omit=dev` reports no vulnerabilities. The package's runtime
+dependencies are `pako`, `brotli` and `fzstd`.
+
+Advisories you may see against this repository come from the `browserify`
+devDependency tree, which is used only to build `index.js`. In particular
+`elliptic` currently has an advisory covering every published version, so
+there is nothing to upgrade to. It reaches no shipped file: nothing in `src/`
+requires `crypto`, so the crypto shims are never bundled, and the published
+tarball contains only `src/`, the built bundle, the type definitions and the
+documentation.
