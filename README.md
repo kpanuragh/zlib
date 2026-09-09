@@ -398,7 +398,7 @@ console.log(runningCrc); // Combined checksum
   // Internal buffer size (default: 16KB)
   chunkSize: 16 * 1024,
 
-  // Window size bits: 8-15 (default: 15)
+  // Window size bits: 9-15 (default: 15)
   // Higher = better compression, more memory
   windowBits: 15,
 
@@ -1140,6 +1140,9 @@ Typical compression ratios for text data (2KB Lorem Ipsum):
 | DeflateRaw | 1034 bytes | 48.8% | Fast |
 | **Brotli** | **751 bytes** | **62.8%** | Slower |
 
+Zstd is absent from this table because this package only decodes it; see
+[Limitations](#limitations).
+
 ### When to Use Each Algorithm
 
 | Algorithm | Best For |
@@ -1148,6 +1151,7 @@ Typical compression ratios for text data (2KB Lorem Ipsum):
 | **Deflate** | ZIP files, PNG images, HTTP (older) |
 | **DeflateRaw** | Custom protocols, embedded systems |
 | **Brotli** | Static content, web assets, when size matters most |
+| **Zstd** | Decoding payloads from a server that already speaks zstd |
 
 ## React Native Usage
 
@@ -1385,43 +1389,53 @@ zlib.constants.Z_BEST_COMPRESSION
 zlib.constants.BROTLI_MAX_QUALITY
 ```
 
-### Breaking Changes
+### Breaking Changes in v2.0.0
 
-**None!** Version 2.0.0 is fully backward compatible with v1.x. All existing code will continue to work without modifications.
+**None.** Version 2.0.0 was fully backward compatible with v1.x.
+
+Version 3.0.0 does introduce breaking changes - see
+[Migration to v3.x](#migration-to-v3x).
 
 ## Troubleshooting
 
-### "Not a string or buffer" Error
+### `ERR_INVALID_ARG_TYPE`
 
-**Problem:** Input data is not a valid type.
+**Problem:** Input is not a type the compression methods accept.
 
-**Solution:** Ensure input is a string, Buffer, or Uint8Array:
+**Solution:** Pass a string, `Buffer`, `TypedArray`, `DataView` or
+`ArrayBuffer`:
 
 ```javascript
-// Wrong
+// Wrong - throws ERR_INVALID_ARG_TYPE
 zlib.gzipSync(123);
 zlib.gzipSync({ data: 'test' });
 
 // Correct
 zlib.gzipSync('123');
 zlib.gzipSync(Buffer.from('123'));
+zlib.gzipSync(new Uint8Array([1, 2, 3]));
 zlib.gzipSync(JSON.stringify({ data: 'test' }));
 ```
 
-### Brotli Fails on Very Short Data
+In 2.x this was a plain `Error` reading "Not a string or buffer". It is now a
+`TypeError` with Node's code and message; see
+[Error Handling](#error-handling).
 
-**Problem:** Brotli library may have issues with very short inputs (<10 bytes).
+### `ERR_BUFFER_TOO_LARGE`
 
-**Solution:** Use Gzip/Deflate for very short strings:
+**Problem:** Output grew past the `maxOutputLength` you set.
+
+**Solution:** Raise the cap, or treat it as the guard it is. When decompressing
+untrusted input, catching this is the point:
 
 ```javascript
-const data = 'Hi';
-
-// May fail with very short data
-// zlib.brotliCompressSync(data);
-
-// Use gzip instead for short data
-const compressed = zlib.gzipSync(data);
+try {
+  zlib.gunzipSync(untrusted, { maxOutputLength: 10 * 1024 * 1024 });
+} catch (err) {
+  if (err.code === 'ERR_BUFFER_TOO_LARGE') {
+    // Refuse the payload rather than exhausting memory
+  }
+}
 ```
 
 ### Memory Issues with Large Data
@@ -1477,7 +1491,8 @@ const result = zlib.unzipSync(deflated); // Also works!
 2. **Use Gzip for dynamic content** - Good compression, fast
 3. **Use sync methods sparingly** - They block the event loop
 4. **Set appropriate compression level** - Balance size vs speed
-5. **Reuse streams when possible** - Avoid creating new instances
+5. **Create a new stream per operation** - a stream cannot be written to
+   again once it has ended
 
 ## License
 
