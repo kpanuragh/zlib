@@ -5,7 +5,7 @@
 
 Pure JavaScript implementation of Node.js `zlib` module for React Native, browsers, and JavaScript environments where native modules are not available.
 
-**Compatible with Node.js 22.x LTS API**
+**Matches the Node.js 22.x LTS `zlib` surface**, including Zstd decompression, `maxOutputLength`, `info`, `bytesWritten`, and Node's `ERR_*` error codes. The test suite verifies this by diffing against the host's real `zlib` and round-tripping every codec against Node's native implementation.
 
 ## Table of Contents
 
@@ -18,14 +18,18 @@ Pure JavaScript implementation of Node.js `zlib` module for React Native, browse
   - [Convenience Methods (Sync)](#convenience-methods-sync)
   - [Stream Factory Methods](#stream-factory-methods)
   - [Stream Classes](#stream-classes)
+  - [Instance Properties and Methods](#instance-properties-and-methods)
   - [Utility Functions](#utility-functions)
 - [Options](#options)
+- [Error Handling](#error-handling)
 - [Constants](#constants)
 - [Examples](#examples)
+- [Limitations](#limitations)
 - [Compression Comparison](#compression-comparison)
 - [React Native Usage](#react-native-usage)
 - [Browser Usage](#browser-usage)
 - [Building from Source](#building-from-source)
+- [Migration to v3.x](#migration-to-v3x)
 - [Migration from v1.x](#migration-from-v1x)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -39,9 +43,14 @@ Pure JavaScript implementation of Node.js `zlib` module for React Native, browse
 | **DeflateRaw/InflateRaw** | Raw deflate without header | All |
 | **Unzip** | Auto-detect and decompress | All |
 | **Brotli** | Modern compression, better ratios | 11.7.0+ |
+| **Zstd** | Decompression only - see [Limitations](#limitations) | 22.15.0+ |
 | **CRC32** | Checksum calculation | 22.2.0+ |
 | **Stream Support** | Node.js Transform streams | All |
-| **Sync & Async APIs** | Both synchronous and callback | All |
+| **Sync, callback & promise APIs** | Promises are this package's own addition | All |
+| **`maxOutputLength`** | Caps output, throws `ERR_BUFFER_TOO_LARGE` | 12.19.0+ |
+| **`info: true`** | Returns `{ buffer, engine }` | 12.19.0+ |
+| **`bytesWritten`** | Bytes fed to the engine | All |
+| **Node `ERR_*` error codes** | Same code, prototype and message text | All |
 
 ## Installation
 
@@ -91,7 +100,25 @@ console.log(brotliDecompressed.toString()); // 'Hello, World!'
 // ============================================
 
 const checksum = zlib.crc32('Hello, World!');
-console.log(checksum); // 3957769958
+console.log(checksum); // 3964322768
+
+// ============================================
+// Zstd Decompression
+// ============================================
+
+// Decoding is supported; encoding is not - see Limitations
+const zstdDecompressed = zlib.zstdDecompressSync(zstdPayload);
+console.log(zstdDecompressed.toString());
+
+// ============================================
+// Promises
+// ============================================
+
+// Omit the callback and you get a promise back
+async function roundTrip() {
+  const gzipped = await zlib.gzip('Hello, World!');
+  console.log((await zlib.gunzip(gzipped)).toString()); // 'Hello, World!'
+}
 ```
 
 ## Promise-Based API
@@ -180,6 +207,11 @@ All async methods follow the pattern: `method(buffer[, options], callback)`
 | `zlib.unzip(buffer[, options], callback)` | Auto-detect and decompress (gzip or deflate) |
 | `zlib.brotliCompress(buffer[, options], callback)` | Compress using Brotli |
 | `zlib.brotliDecompress(buffer[, options], callback)` | Decompress Brotli |
+| `zlib.zstdDecompress(buffer[, options], callback)` | Decompress Zstd |
+| `zlib.zstdCompress(buffer[, options], callback)` | Throws - see [Limitations](#limitations) |
+
+Omit the callback and the same methods return a promise. Input may be a
+string, `Buffer`, `TypedArray`, `DataView` or `ArrayBuffer`.
 
 **Example:**
 
@@ -208,6 +240,8 @@ All sync methods follow the pattern: `methodSync(buffer[, options])`
 | `zlib.unzipSync(buffer[, options])` | Auto-detect and decompress |
 | `zlib.brotliCompressSync(buffer[, options])` | Compress using Brotli |
 | `zlib.brotliDecompressSync(buffer[, options])` | Decompress Brotli |
+| `zlib.zstdDecompressSync(buffer[, options])` | Decompress Zstd |
+| `zlib.zstdCompressSync(buffer[, options])` | Throws - see [Limitations](#limitations) |
 
 **Example:**
 
@@ -236,6 +270,8 @@ Create Transform streams for piping data.
 | `zlib.createUnzip([options])` | Create auto-detect decompression stream |
 | `zlib.createBrotliCompress([options])` | Create Brotli compression stream |
 | `zlib.createBrotliDecompress([options])` | Create Brotli decompression stream |
+| `zlib.createZstdDecompress([options])` | Create Zstd decompression stream |
+| `zlib.createZstdCompress([options])` | Throws - see [Limitations](#limitations) |
 
 **Example:**
 
@@ -262,12 +298,61 @@ Direct class constructors (also available via factory methods).
 | `zlib.Unzip` | Auto-detect decompression class |
 | `zlib.BrotliCompress` | Brotli compression class |
 | `zlib.BrotliDecompress` | Brotli decompression class |
+| `zlib.ZstdDecompress` | Zstd decompression class |
+| `zlib.ZstdCompress` | Present for API parity; constructing it throws |
+
+Every class also carries Node's instance API: `bytesWritten`, `bytesRead`,
+`close()`, `flush()`, `reset()`, `params()` and `destroy()`.
 
 **Example:**
 
 ```javascript
 const gzip = new zlib.Gzip({ level: 9 });
 ```
+
+### Instance Properties and Methods
+
+Every stream instance carries Node's instance API.
+
+| Member | Description |
+|--------|-------------|
+| `stream.bytesWritten` | Bytes handed to the engine, before compression or decompression |
+| `stream.bytesRead` | Deprecated alias for `bytesWritten`, kept for parity |
+| `stream.close([callback])` | Release the underlying handle and emit `close` |
+| `stream.flush([kind][, callback])` | Flush buffered data with the given flush constant |
+| `stream.reset()` | Reset the stream to its initial state |
+| `stream.params(level, strategy[, callback])` | Retune compression level and strategy mid-stream |
+| `stream.destroy([error])` | Standard stream teardown |
+
+#### `bytesWritten`
+
+Counts input, not output, matching Node:
+
+```javascript
+const gzip = zlib.createGzip();
+gzip.on('end', () => {
+  console.log(gzip.bytesWritten); // 1000 - the uncompressed size
+});
+gzip.end('x'.repeat(1000));
+```
+
+#### `params(level, strategy[, callback])`
+
+Changes the compression level and strategy partway through a deflate stream.
+Data already emitted keeps the old settings; everything after uses the new
+ones. The result is a single valid stream.
+
+```javascript
+const deflate = zlib.createDeflate({ level: 1 });
+
+deflate.write(headerChunk);              // compressed fast
+deflate.params(9, zlib.Z_DEFAULT_STRATEGY, () => {
+  deflate.end(bodyChunk);                // compressed hard
+});
+```
+
+Only meaningful on the deflate family. On Brotli it is a no-op that invokes
+the callback, as Node's is.
 
 ### Utility Functions
 
@@ -329,8 +414,43 @@ console.log(runningCrc); // Combined checksum
   strategy: zlib.Z_DEFAULT_STRATEGY,
 
   // Preset dictionary for compression
-  dictionary: Buffer
+  dictionary: Buffer,
+
+  // Cap the output; exceeding it throws ERR_BUFFER_TOO_LARGE
+  // (default: buffer.kMaxLength)
+  maxOutputLength: 1024 * 1024,
+
+  // Return { buffer, engine } instead of just the buffer
+  info: false
 }
+```
+
+Note that `windowBits` accepts 9 to 15, matching Node. Only `inflateRaw`
+also accepts 8.
+
+**`maxOutputLength`** guards against decompression bombs. It applies to the
+sync, callback and promise forms alike:
+
+```javascript
+try {
+  zlib.gunzipSync(untrusted, { maxOutputLength: 10 * 1024 * 1024 });
+} catch (err) {
+  if (err.code === 'ERR_BUFFER_TOO_LARGE') {
+    console.error('Refusing to decompress: output too large');
+  }
+}
+
+// Asynchronously, the same condition arrives as an error
+zlib.gunzip(untrusted, { maxOutputLength: 10 * 1024 * 1024 })
+  .catch(err => console.error(err.code)); // 'ERR_BUFFER_TOO_LARGE'
+```
+
+**`info: true`** returns the engine alongside the output, which is how you
+reach `bytesWritten` from a one-shot call:
+
+```javascript
+const { buffer, engine } = zlib.gzipSync(data, { info: true });
+console.log(buffer.length, 'bytes out of', engine.bytesWritten, 'in');
 ```
 
 **Compression Level Examples:**
@@ -401,9 +521,101 @@ zlib.brotliCompressSync(fontData, {
 });
 ```
 
+### Zstd Options
+
+Decompression only. See [Limitations](#limitations).
+
+```javascript
+{
+  flush: zlib.constants.ZSTD_e_continue,
+  finishFlush: zlib.constants.ZSTD_e_end,
+  chunkSize: 16 * 1024,
+  maxOutputLength: 1024 * 1024,
+
+  params: {
+    // Maximum window size the decoder will accept
+    [zlib.constants.ZSTD_d_windowLogMax]: 27
+  }
+}
+```
+
+```javascript
+// Decode a zstd payload from a server
+async function decode(payload) {
+  return zlib.zstdDecompress(payload);
+}
+
+// Or as a stream - this one decodes incrementally
+response.pipe(zlib.createZstdDecompress()).pipe(destination);
+```
+
+## Error Handling
+
+Errors carry the same `code`, prototype and message text as Node's, so code
+that branches on `err.code` works unchanged.
+
+### Validation errors
+
+Thrown synchronously, from the sync, callback and promise forms alike.
+
+| Code | Type | Raised when |
+|------|------|-------------|
+| `ERR_INVALID_ARG_TYPE` | `TypeError` | Input is not a string, `Buffer`, `TypedArray`, `DataView` or `ArrayBuffer`; or an option has the wrong type |
+| `ERR_OUT_OF_RANGE` | `RangeError` | `level`, `windowBits`, `memLevel`, `strategy`, `chunkSize` or `flush` is outside its range |
+| `ERR_BUFFER_TOO_LARGE` | `RangeError` | Output exceeded `maxOutputLength` |
+| `ERR_BROTLI_INVALID_PARAM` | `RangeError` | Unknown key in a Brotli `params` object |
+| `ERR_ZSTD_INVALID_PARAM` | `RangeError` | Unknown key in a Zstd `params` object |
+| `ERR_METHOD_NOT_IMPLEMENTED` | `Error` | Zstd compression was attempted |
+| `ERR_ZLIB_INITIALIZATION_FAILED` | `Error` | The engine could not be initialised |
+
+```javascript
+try {
+  zlib.gzipSync(data, { level: 12 });
+} catch (err) {
+  console.log(err.code);    // 'ERR_OUT_OF_RANGE'
+  console.log(err.message); // 'The value of "options.level" is out of range. ...'
+}
+```
+
+### Stream errors
+
+Corrupt input reports the underlying zlib return code, reaching you through
+the callback, the rejected promise, or the stream's `error` event.
+
+| Code | Meaning |
+|------|---------|
+| `Z_DATA_ERROR` | Input is corrupt or not in the expected format |
+| `Z_BUF_ERROR` | No progress was possible |
+| `Z_NEED_DICT` | A preset dictionary is required |
+| `Z_STREAM_ERROR` | Inconsistent stream state |
+
+`err.errno` carries the numeric code, and `zlib.codes` maps between the two.
+
+```javascript
+// Promise form
+zlib.gunzip(corrupt).catch(err => {
+  console.log(err.code, err.errno); // 'Z_DATA_ERROR' -3
+});
+
+// Callback form
+zlib.brotliDecompress(corrupt, (err, result) => {
+  if (err) console.error('Could not decode:', err.message);
+});
+
+// Stream form
+zlib.createGunzip()
+  .on('error', err => console.error(err.code))
+  .end(corrupt);
+```
+
+Note that corrupt Brotli and Zstd input reaches your callback or rejects your
+promise. In 2.x it crashed the process.
+
 ## Constants
 
-All constants are available both directly on `zlib` and via `zlib.constants`.
+All 176 constants are available both directly on `zlib` and via
+`zlib.constants`, which includes every one of Node's 170 with identical
+values. Direct properties are non-enumerable, as Node's are.
 
 ### Compression Levels
 
@@ -512,6 +724,23 @@ All constants are available both directly on `zlib` and via `zlib.constants`.
 | `BROTLI_DECODER_RESULT_SUCCESS` | 1 | Success |
 | `BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT` | 2 | Need more input |
 | `BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT` | 3 | Need more output |
+
+### Zstd Constants
+
+All 72 of Node's `ZSTD_*` constants are present. The ones you are likely to
+use:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `ZSTD_e_continue` | 0 | Keep accepting input |
+| `ZSTD_e_flush` | 1 | Flush what has been buffered |
+| `ZSTD_e_end` | 2 | Finish the frame |
+| `ZSTD_d_windowLogMax` | 100 | Largest window the decoder will accept |
+| `ZSTD_c_compressionLevel` | 100 | Compression level (encoding is unavailable) |
+| `ZSTD_CLEVEL_DEFAULT` | 3 | Default compression level |
+
+The full set also covers every `ZSTD_c_*` compression parameter, the
+`ZSTD_error_*` codes and the `ZSTD_fast` through `ZSTD_btultra2` strategies.
 
 ### Accessing Constants
 
@@ -857,6 +1086,49 @@ console.log('Compressed size:', compressed.length);
 console.log('Data preserved:', JSON.stringify(data) === JSON.stringify(decompressed));
 ```
 
+## Limitations
+
+Three places where this package cannot match Node, stated plainly so you can
+decide whether they matter for your use.
+
+### Zstd compression is unavailable
+
+`zstdCompress`, `zstdCompressSync` and `createZstdCompress` exist so that code
+type-checks and feature-detects the same way, but calling them throws
+`ERR_METHOD_NOT_IMPLEMENTED`.
+
+There is no pure-JavaScript zstd encoder. Every option is a WebAssembly build,
+which needs asynchronous initialization - so it cannot back a `*Sync` method -
+and does not run under Hermes, the React Native engine this package targets.
+
+Decompression is fully supported, and `createZstdDecompress()` is genuinely
+incremental.
+
+```javascript
+zlib.zstdDecompressSync(payload);   // works
+zlib.zstdCompressSync(data);        // throws ERR_METHOD_NOT_IMPLEMENTED
+```
+
+### Brotli compression buffers the whole stream
+
+The `brotli` package exposes only one-shot entry points, so
+`createBrotliCompress()` accumulates all input and emits its output when the
+stream finishes.
+
+The output is correct at any size, and interoperates with Node's native
+Brotli in both directions. But memory use is proportional to the input, and a
+mid-stream `flush()` cannot emit partial data. If you are compressing
+something very large and streaming matters more than the compression ratio,
+gzip is the better choice here.
+
+Brotli *decompression*, and all gzip and deflate operations, stream normally.
+
+### `zlib.constants` is a small superset
+
+It carries six names Node does not export: `NONE`, `Z_BINARY`, `Z_TEXT`,
+`Z_UNKNOWN`, `Z_DEFLATED` and `Z_TREES`. All of Node's 170 constants are
+present with identical values.
+
 ## Compression Comparison
 
 Typical compression ratios for text data (2KB Lorem Ipsum):
@@ -959,12 +1231,18 @@ cd zlib
 # Install dependencies
 npm install
 
-# Build bundles
-npm run build           # Build index.js (main bundle)
-npm run build:buffer    # Build buffer.js
+# Build the browser/React Native bundle
+npm run build           # index.js
+npm run build:buffer    # buffer.js
 
-# Run tests
+# Regenerate the constant table and the type definitions
+npm run build:constants # src/constants.js, from the running Node's zlib
+npm run build:types     # index.d.ts, from src/constants.js
+
+# Run tests against both entry points
 npm test
+npm run test:src        # source only
+npm run test:bundle     # bundle only
 ```
 
 ### Project Structure
@@ -972,16 +1250,27 @@ npm test
 ```
 zlib/
 ├── src/
-│   ├── binding.js        # Low-level zlib binding using pako
-│   ├── brotli-binding.js # Brotli binding using brotli npm package
-│   ├── zlib.js           # Main zlib module with all exports
-│   └── entry.js          # Browserify entry point
-├── index.js              # Browserified main bundle (~1.3MB)
+│   ├── index.js          # Package main; re-exports zlib.js
+│   ├── zlib.js           # Public API: classes, factories, convenience methods
+│   ├── zlib-base.js      # Shared Transform: write loop, lifecycle, options
+│   ├── binding.js        # Deflate/inflate binding over pako
+│   ├── brotli-binding.js # Brotli binding over the brotli package
+│   ├── zstd-binding.js   # Zstd decode binding over fzstd
+│   ├── constants.js      # All 176 constants (generated)
+│   ├── errors.js         # Node's ERR_* classes
+│   └── crc32.js          # CRC-32
+├── test/                 # node:test suites, run against both entries
+├── scripts/              # Constant/type generators, test runner
+├── index.js              # Browserified bundle (~1.3MB)
 ├── buffer.js             # Buffer implementation (~55KB)
-├── test.js               # Comprehensive test suite (121 tests)
-├── package.json          # Package configuration
+├── index.d.ts            # TypeScript definitions (generated)
 └── README.md             # This documentation
 ```
+
+The test suite is differential: it diffs the export list, all of Node's
+constants and every class prototype against the host's real `zlib`, compares
+error outcomes case by case, and round-trips every codec against Node's
+native implementation in both directions.
 
 ### Dependencies
 
@@ -989,7 +1278,61 @@ zlib/
 |---------|---------|
 | `pako` | Pure JS deflate/inflate implementation |
 | `brotli` | Pure JS Brotli implementation |
+| `fzstd` | Pure JS Zstd decompressor |
 | `browserify` | Bundle for browser (dev dependency) |
+
+## Migration to v3.x
+
+Most code needs no changes. v3.0.0 is a major version because error handling
+and the package entry point changed.
+
+### Errors now match Node's
+
+Validation errors carry Node's `code`, prototype and message text. If you were
+matching on the old message strings, match on `err.code` instead:
+
+```javascript
+// Before (v2.x): plain Error, message "Invalid compression level: 12"
+// Now: RangeError, code ERR_OUT_OF_RANGE, Node's exact message
+try {
+  zlib.gzipSync(data, { level: 12 });
+} catch (err) {
+  if (err.code === 'ERR_OUT_OF_RANGE') { /* ... */ }
+}
+```
+
+Runtime stream errors are unchanged: they still carry `err.code` of
+`Z_DATA_ERROR` and friends.
+
+### Node consumers now get real Buffers
+
+`main` resolves to the source rather than the browserify bundle, so
+`Buffer.isBuffer(result)` is now `true` under Node. Browsers and React Native
+still load the prebuilt bundle through the `browser` and `react-native`
+fields, unchanged.
+
+### Corrected constant values
+
+`BROTLI_ENCODE` and `BROTLI_DECODE` were transposed and are now 9 and 8, as
+Node has them. `zlib.codes` no longer has a stray `"undefined"` key, and now
+includes `Z_MEM_ERROR` and `Z_VERSION_ERROR`.
+
+### Bugs fixed
+
+- Brotli decompression corrupted or threw on payloads over 16 KB.
+- Brotli compression silently returned zero bytes for short or incompressible
+  input.
+- Brotli errors crashed the process instead of reaching your callback or
+  rejecting your promise.
+- `params()` crashed the process; it now retunes the stream as Node's does.
+- `windowBits: 8` is now rejected for compression, matching Node. Use 9.
+
+### New in v3.0.0
+
+- Zstd decompression, and all 72 `ZSTD_*` constants
+- `maxOutputLength`, `info: true`, `bytesWritten` and `bytesRead`
+- `ArrayBuffer` accepted as input
+- 98 previously missing constants
 
 ## Migration from v1.x
 

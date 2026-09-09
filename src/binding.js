@@ -6,77 +6,39 @@ var assert = require('assert');
 var Zstream = require('pako/lib/zlib/zstream');
 var zlib_deflate = require('pako/lib/zlib/deflate.js');
 var zlib_inflate = require('pako/lib/zlib/inflate.js');
-var constants = require('pako/lib/zlib/constants');
 
-for (var key in constants) {
+var constants = require('./constants');
+var errors = require('./errors');
+
+// Re-exported so the rest of the package can reach the constants through the
+// binding, the way Node's JS layer reaches its C++ binding.
+Object.keys(constants).forEach(function (key) {
   exports[key] = constants[key];
-}
-
-// zlib modes
-exports.NONE = 0;
-exports.DEFLATE = 1;
-exports.INFLATE = 2;
-exports.GZIP = 3;
-exports.GUNZIP = 4;
-exports.DEFLATERAW = 5;
-exports.INFLATERAW = 6;
-exports.UNZIP = 7;
-exports.BROTLI_ENCODE = 8;
-exports.BROTLI_DECODE = 9;
-
-// Brotli constants (Node.js 11.7.0+)
-// Brotli operations
-exports.BROTLI_OPERATION_PROCESS = 0;
-exports.BROTLI_OPERATION_FLUSH = 1;
-exports.BROTLI_OPERATION_FINISH = 2;
-exports.BROTLI_OPERATION_EMIT_METADATA = 3;
-
-// Brotli encoder modes
-exports.BROTLI_MODE_GENERIC = 0;
-exports.BROTLI_MODE_TEXT = 1;
-exports.BROTLI_MODE_FONT = 2;
-
-// Brotli quality levels
-exports.BROTLI_MIN_QUALITY = 0;
-exports.BROTLI_MAX_QUALITY = 11;
-exports.BROTLI_DEFAULT_QUALITY = 11;
-
-// Brotli window bits
-exports.BROTLI_MIN_WINDOW_BITS = 10;
-exports.BROTLI_MAX_WINDOW_BITS = 24;
-exports.BROTLI_LARGE_MAX_WINDOW_BITS = 30;
-exports.BROTLI_DEFAULT_WINDOW = 22;
-
-// Brotli input block bits
-exports.BROTLI_MIN_INPUT_BLOCK_BITS = 16;
-exports.BROTLI_MAX_INPUT_BLOCK_BITS = 24;
-
-// Brotli encoder parameters
-exports.BROTLI_PARAM_MODE = 0;
-exports.BROTLI_PARAM_QUALITY = 1;
-exports.BROTLI_PARAM_LGWIN = 2;
-exports.BROTLI_PARAM_LGBLOCK = 3;
-exports.BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING = 4;
-exports.BROTLI_PARAM_SIZE_HINT = 5;
-exports.BROTLI_PARAM_LARGE_WINDOW = 6;
-exports.BROTLI_PARAM_NPOSTFIX = 7;
-exports.BROTLI_PARAM_NDIRECT = 8;
-
-// Brotli decoder parameters
-exports.BROTLI_DECODER_PARAM_DISABLE_RING_BUFFER_REALLOCATION = 0;
-exports.BROTLI_DECODER_PARAM_LARGE_WINDOW = 1;
-
-// Brotli decoder result codes
-exports.BROTLI_DECODER_RESULT_ERROR = 0;
-exports.BROTLI_DECODER_RESULT_SUCCESS = 1;
-exports.BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT = 2;
-exports.BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT = 3;
+});
 
 var GZIP_HEADER_ID1 = 0x1f;
 var GZIP_HEADER_ID2 = 0x8b;
 
+// zlib's configuration table, replicated so deflateParams can retune the
+// stream. pako keeps the table module-private but looks up
+// configuration_table[s.level].func on every deflate() call, so writing
+// s.level is enough to switch algorithms.
+var CONFIG = [
+  //  good, lazy, nice, chain
+  [0, 0, 0, 0],
+  [4, 4, 8, 4],
+  [4, 5, 16, 8],
+  [4, 6, 32, 32],
+  [4, 4, 16, 16],
+  [8, 16, 32, 32],
+  [8, 16, 128, 128],
+  [8, 32, 128, 256],
+  [32, 128, 258, 1024],
+  [32, 258, 258, 4096]
+];
+
 /**
- * Emulate Node's zlib C++ layer for use by the JS layer in index.js
+ * Emulate Node's zlib C++ layer for use by the JS layer.
  */
 function Zlib(mode) {
   if (typeof mode !== 'number' || mode < exports.DEFLATE || mode > exports.UNZIP) {
@@ -138,8 +100,6 @@ Zlib.prototype._write = function (async, flush, input, in_off, in_len, out, out_
   this.write_in_progress = true;
 
   assert.equal(false, flush === undefined, 'must provide flush value');
-
-  this.write_in_progress = true;
 
   if (flush !== exports.Z_NO_FLUSH && flush !== exports.Z_PARTIAL_FLUSH && flush !== exports.Z_SYNC_FLUSH && flush !== exports.Z_FULL_FLUSH && flush !== exports.Z_FINISH && flush !== exports.Z_BLOCK) {
     throw new Error('Invalid flush value');
@@ -252,7 +212,10 @@ Zlib.prototype._process = function () {
           this.err = exports.Z_NEED_DICT;
         }
       }
-      while (this.strm.avail_in > 0 && this.mode === exports.GUNZIP && this.err === exports.Z_STREAM_END && this.strm.next_in[0] !== 0x00) {
+      // Concatenated gzip members: restart the stream and keep going.
+      while (this.strm.avail_in > 0 && this.mode === exports.GUNZIP &&
+             this.err === exports.Z_STREAM_END &&
+             this.strm.input[this.strm.next_in] !== 0x00) {
         this.reset();
         this.err = zlib_inflate.inflate(this.strm, this.flush);
       }
@@ -331,8 +294,43 @@ Zlib.prototype.init = function (windowBits, level, memLevel, strategy, dictionar
   this._setDictionary();
 };
 
-Zlib.prototype.params = function () {
-  throw new Error('deflateParams Not supported');
+// deflateParams(level, strategy). zlib flushes any pending output before
+// retuning the stream, so the bytes already emitted keep the old settings.
+Zlib.prototype.params = function (level, strategy) {
+  if (this.mode !== exports.DEFLATE && this.mode !== exports.GZIP && this.mode !== exports.DEFLATERAW) {
+    return;
+  }
+
+  var s = this.strm.state;
+  if (!s) return;
+
+  var effective = level === exports.Z_DEFAULT_COMPRESSION ? 6 : level;
+  if (effective < 0 || effective > 9) {
+    this.err = exports.Z_STREAM_ERROR;
+    this._error('Invalid compression level');
+    return;
+  }
+
+  if ((s.level !== effective || s.strategy !== strategy) && this.strm.total_out > 0) {
+    this.err = zlib_deflate.deflate(this.strm, exports.Z_BLOCK);
+    if (this.err !== exports.Z_OK && this.err !== exports.Z_BUF_ERROR) {
+      this._error('Zlib error');
+      return;
+    }
+  }
+
+  if (s.level !== effective) {
+    s.level = effective;
+    s.max_lazy_match = CONFIG[effective][1];
+    s.good_match = CONFIG[effective][0];
+    s.nice_match = CONFIG[effective][2];
+    s.max_chain_length = CONFIG[effective][3];
+  }
+  s.strategy = strategy;
+
+  this.level = level;
+  this.strategy = strategy;
+  this.err = exports.Z_OK;
 };
 
 Zlib.prototype.reset = function () {
@@ -381,7 +379,7 @@ Zlib.prototype._init = function (level, windowBits, memLevel, strategy, dictiona
   }
 
   if (this.err !== exports.Z_OK) {
-    this._error('Init error');
+    throw errors.initializationFailed();
   }
 
   this.dictionary = dictionary;

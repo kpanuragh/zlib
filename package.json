@@ -1,12 +1,28 @@
 {
   "name": "react-zlib-js",
-  "version": "2.1.0",
-  "description": "Pure javascript implementation of Zlib nodejs core module. The zlib module provides compression functionality implemented using Gzip, Deflate/Inflate, and Brotli. Compatible with Node.js 22.x LTS.",
-  "main": "index.js",
+  "version": "3.0.0",
+  "description": "Pure JavaScript implementation of the Node.js zlib core module: Gzip, Deflate/Inflate, Brotli and Zstd decompression, for React Native and the browser. API-compatible with Node.js 22.x LTS.",
+  "main": "src/index.js",
+  "browser": "index.js",
+  "react-native": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "src/",
+    "index.js",
+    "buffer.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "browserify src/entry.js -s zlib -o index.js",
+    "build": "browserify src/zlib.js -s zlib -o index.js",
     "build:buffer": "browserify node_modules/buffer/index.js -s buffer -o buffer.js",
-    "test": "node test.js"
+    "build:constants": "node scripts/gen-constants.js > src/constants.js",
+    "test": "node scripts/run-tests.js",
+    "test:src": "node scripts/run-tests.js src",
+    "test:bundle": "node scripts/run-tests.js bundle",
+    "prepublishOnly": "npm run build && npm test",
+    "build:types": "node scripts/gen-types.js > index.d.ts"
   },
   "repository": {
     "type": "git",
@@ -18,6 +34,7 @@
     "Zlib",
     "Gzip",
     "Brotli",
+    "Zstd",
     "compression",
     "deflate",
     "inflate",
@@ -29,8 +46,12 @@
     "url": "https://github.com/anuraghkp1/zlib/issues"
   },
   "homepage": "https://github.com/anuraghkp1/zlib#readme",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "brotli": "^1.3.3",
+    "fzstd": "^0.1.1",
     "pako": "^1.0.11"
   },
   "devDependencies": {
