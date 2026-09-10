@@ -84,11 +84,6 @@ exports.methodNotImplemented = function (name) {
     'The ' + name + ' method is not implemented');
 };
 
-// Used where this package cannot reach parity at all, rather than where it
-// simply has not yet. The message says why, so callers are not left guessing.
-exports.notImplemented = function (message) {
-  return makeError(Error, 'ERR_METHOD_NOT_IMPLEMENTED', message);
-};
 
 // Shared expectation strings, kept here so the wording stays identical
 // everywhere it is used.

@@ -41,16 +41,31 @@ test('enumerable exports match Node exactly [' + target.label + ']', function ()
   assert.deepStrictEqual(Object.keys(zlib).sort(), Object.keys(nodeZlib).sort());
 });
 
+// ZLIB_VERNUM reports the version of the zlib library the runtime was built
+// against, so it varies between Node releases - 4865 on 22.15, 4880 on 22.23.
+// A pure-JavaScript implementation has no such library to report, so it
+// carries a fixed value and only its presence is checked.
+var RUNTIME_DEPENDENT = ['ZLIB_VERNUM'];
+
 test('every Node constant is present with the same value [' + target.label + ']', function () {
   var wrong = [];
   Object.keys(nodeZlib.constants).forEach(function (key) {
     if (!(key in zlib.constants)) {
       wrong.push(key + ' missing');
-    } else if (zlib.constants[key] !== nodeZlib.constants[key]) {
+      return;
+    }
+    if (RUNTIME_DEPENDENT.indexOf(key) !== -1) return;
+    if (zlib.constants[key] !== nodeZlib.constants[key]) {
       wrong.push(key + ' is ' + zlib.constants[key] + ', Node has ' + nodeZlib.constants[key]);
     }
   });
   assert.deepStrictEqual(wrong, []);
+});
+
+test('runtime-dependent constants are present and numeric [' + target.label + ']', function () {
+  RUNTIME_DEPENDENT.forEach(function (key) {
+    assert.strictEqual(typeof zlib.constants[key], 'number', key);
+  });
 });
 
 test('constants and codes are frozen [' + target.label + ']', function () {

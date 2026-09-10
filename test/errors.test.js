@@ -65,11 +65,33 @@ test('a corrupt stream reaches the callback rather than throwing [' + target.lab
   });
 });
 
-test('zstd compression fails with a clear, coded error [' + target.label + ']', function () {
-  assert.throws(function () { zlib.zstdCompressSync('x'); }, function (err) {
-    assert.strictEqual(err.code, 'ERR_METHOD_NOT_IMPLEMENTED');
-    assert.match(err.message, /pure-JavaScript zstd encoder/);
-    return true;
+test('zstd compression round-trips and interoperates [' + target.label + ']', function () {
+  var input = Buffer.from('the quick brown fox jumps over the lazy dog. '.repeat(200));
+
+  // The bundle substitutes its own Buffer, whose equals() refuses a Node
+  // Buffer, so results are normalised before comparing.
+  function same(result) {
+    return Buffer.from(result).equals(input);
+  }
+
+  var frame = zlib.zstdCompressSync(input);
+  assert.ok(frame.length < input.length / 10, 'should actually compress');
+  assert.ok(same(zlib.zstdDecompressSync(frame)), 'own decoder disagrees');
+  assert.ok(nodeZlib.zstdDecompressSync(Buffer.from(frame)).equals(input), 'libzstd disagrees');
+
+  // And the other direction, which already worked.
+  assert.ok(same(zlib.zstdDecompressSync(nodeZlib.zstdCompressSync(input))));
+});
+
+test('createZstdCompress produces a usable stream [' + target.label + ']', function (t, done) {
+  var input = Buffer.from('streamed zstd '.repeat(2000));
+  var stream = zlib.createZstdCompress();
+  var chunks = [];
+
+  stream.on('data', function (chunk) { chunks.push(Buffer.from(chunk)); });
+  stream.on('end', function () {
+    assert.ok(nodeZlib.zstdDecompressSync(Buffer.concat(chunks)).equals(input));
+    done();
   });
-  assert.throws(function () { zlib.createZstdCompress(); }, { code: 'ERR_METHOD_NOT_IMPLEMENTED' });
+  stream.end(input);
 });

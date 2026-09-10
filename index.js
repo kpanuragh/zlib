@@ -19010,6 +19010,3501 @@ module.exports = function whichTypedArray(value) {
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 },{"available-typed-arrays":5,"call-bind":29,"call-bound":30,"for-each":43,"get-proto":51,"gopd":53,"has-tostringtag/shams":57}],116:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Zstandard bitstreams (RFC 8878 Section 4.1).
+//
+// The compressor writes bits forward; the decompressor reads them backward.
+// After the final information bit the compressor writes a single 1 bit and
+// pads the rest of the byte with zeros, so the last byte is never zero and
+// the decoder can locate the end marker by finding its highest set bit.
+//
+// Because the decoder consumes bits in reverse, anything written here must be
+// written in reverse of the order it will be read. For the sequences bitstream
+// that means emitting the last sequence first.
+//
+// The accumulator is a plain number rather than a 32-bit integer: JavaScript's
+// bitwise operators are 32-bit, and a single field can be 32 bits wide on top
+// of up to 7 pending bits. Multiplication and division by powers of two stay
+// exact well below 2^53.
+
+var POW2 = new Float64Array(64);
+for (var i = 0; i < 64; i++) POW2[i] = Math.pow(2, i);
+
+// Masks for the fast extraction path, which handles up to 25 bits so that a
+// 32-bit word always covers the field plus its bit offset.
+var MASKS = new Int32Array(26);
+for (var m = 0; m <= 25; m++) MASKS[m] = m === 0 ? 0 : ((1 << m) - 1);
+
+function BitWriter(capacity) {
+  this.buf = Buffer.alloc(capacity || 1024);
+  this.len = 0;
+  this.container = 0;
+  this.bits = 0;
+}
+
+BitWriter.prototype._grow = function (needed) {
+  if (this.len + needed <= this.buf.length) return;
+  var size = this.buf.length * 2;
+  while (size < this.len + needed) size *= 2;
+  var next = Buffer.alloc(size);
+  this.buf.copy(next, 0, 0, this.len);
+  this.buf = next;
+};
+
+BitWriter.prototype._push = function (byte) {
+  this._grow(1);
+  this.buf[this.len++] = byte;
+};
+
+// Append nbBits low bits of value. Bits already written stay below these.
+BitWriter.prototype.addBits = function (value, nbBits) {
+  if (nbBits === 0) return;
+
+  var masked = nbBits >= 53 ? value : value % POW2[nbBits];
+  this.container += masked * POW2[this.bits];
+  this.bits += nbBits;
+
+  while (this.bits >= 8) {
+    this._push(this.container % 256);
+    this.container = Math.floor(this.container / 256);
+    this.bits -= 8;
+  }
+};
+
+// Write the end marker and pad to a byte boundary. Returns the finished bytes.
+BitWriter.prototype.close = function () {
+  this.addBits(1, 1);
+  if (this.bits > 0) {
+    this._push(this.container % 256);
+    this.container = 0;
+    this.bits = 0;
+  }
+  return this.buf.subarray(0, this.len);
+};
+
+// Reads a stream produced by BitWriter, in the order a zstd decoder would:
+// starting at the last byte, below the end marker, working backward.
+function BitReader(bytes) {
+  if (bytes.length === 0) throw new Error('empty bitstream');
+
+  var last = bytes[bytes.length - 1];
+  if (last === 0) throw new Error('last byte of a bitstream must not be zero');
+
+  // Bit index of the end marker, counted from the start of the stream. The
+  // data ends immediately below it.
+  var highest = 31 - Math.clz32(last);
+  this.bytes = bytes;
+  this.pos = (bytes.length - 1) * 8 + highest - 1;
+  // Highest byte index where a 4-byte read stays inside the buffer.
+  this.fastLimit = bytes.length - 4;
+}
+
+// Bits are extracted by reading a little-endian word straddling the wanted
+// range and shifting, rather than one bit at a time. Reads near the start of
+// the stream fall back to a padded path, since the fast one would run off the
+// front of the buffer.
+BitReader.prototype.peek = function (nbBits) {
+  if (nbBits === 0) return 0;
+
+  var low = this.pos - nbBits + 1;
+  var byteIndex = low >> 3;
+
+  if (low >= 0 && nbBits <= 25 && byteIndex <= this.fastLimit) {
+    var bytes = this.bytes;
+    var word = bytes[byteIndex] |
+      (bytes[byteIndex + 1] << 8) |
+      (bytes[byteIndex + 2] << 16) |
+      (bytes[byteIndex + 3] << 24);
+    return (word >>> (low & 7)) & MASKS[nbBits];
+  }
+
+  return this._peekSlow(nbBits, low);
+};
+
+// Handles wide fields and the ends of the stream, where bits below the start
+// read as zero.
+BitReader.prototype._peekSlow = function (nbBits, low) {
+  var value = 0;
+  var bytes = this.bytes;
+  var length = bytes.length;
+
+  for (var n = 0; n < nbBits; n++) {
+    var index = low + n;
+    if (index < 0) continue;
+
+    var byteIndex = index >> 3;
+    if (byteIndex >= length) continue;
+
+    if ((bytes[byteIndex] >> (index & 7)) & 1) value += POW2[n];
+  }
+  return value;
+};
+
+BitReader.prototype.readBits = function (nbBits) {
+  if (nbBits === 0) return 0;
+
+  var pos = this.pos;
+  if (pos - nbBits < -1) throw new Error('bitstream exhausted');
+
+  var low = pos - nbBits + 1;
+  var byteIndex = low >> 3;
+
+  if (low >= 0 && nbBits <= 25 && byteIndex <= this.fastLimit) {
+    var bytes = this.bytes;
+    var word = bytes[byteIndex] |
+      (bytes[byteIndex + 1] << 8) |
+      (bytes[byteIndex + 2] << 16) |
+      (bytes[byteIndex + 3] << 24);
+    this.pos = pos - nbBits;
+    return (word >>> (low & 7)) & MASKS[nbBits];
+  }
+
+  // Wider than a word can cover: take the more significant half first.
+  if (nbBits > 25) {
+    var high = this.readBits(nbBits - 16);
+    return high * 65536 + this.readBits(16);
+  }
+
+  this.pos = pos - nbBits;
+  return this._peekSlow(nbBits, low);
+};
+
+BitReader.prototype.skip = function (nbBits) {
+  this.pos -= nbBits;
+};
+
+BitReader.prototype.exhausted = function () {
+  return this.pos < 0;
+};
+
+/** Bits still unread. Goes negative once the stream is overrun. */
+BitReader.prototype.remaining = function () {
+  return this.pos + 1;
+};
+
+exports.BitWriter = BitWriter;
+exports.BitReader = BitReader;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"buffer":22}],117:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Block encoding: choose between Raw, RLE and Compressed representations.
+
+var c = require('./constants');
+var literalsCodec = require('./literals');
+var matchFinder = require('./match');
+var huffman = require('./huffman');
+var sequenceCodec = require('./sequences');
+
+function isRun(src, start, end) {
+  var first = src[start];
+  for (var i = start + 1; i < end; i++) {
+    if (src[i] !== first) return false;
+  }
+  return true;
+}
+
+/**
+ * Encode one block's worth of input.
+ * @returns {{type: number, content: Buffer, regeneratedSize: number}}
+ */
+/**
+ * Encode one block.
+ *
+ * `finder` is optional. When supplied, its index spans the whole input and
+ * `start`/`end` locate this block within it, so matches can reach into
+ * earlier blocks. Without one, the block is searched on its own.
+ */
+function encodeBlock(src, reps, options, finder, start, end) {
+  var size = src.length;
+
+  if (size > 1 && isRun(src, 0, size)) {
+    // Section 3.1.1.5: only Compressed_Blocks contribute to offset history.
+    return { type: c.BLOCK_RLE, content: Buffer.from([src[0]]), regeneratedSize: size, reps: reps };
+  }
+
+  var compressed = tryCompressed(src, reps, options, finder, start, end);
+  if (compressed !== null && compressed.content.length < size) {
+    return {
+      type: c.BLOCK_COMPRESSED,
+      content: compressed.content,
+      regeneratedSize: size,
+      reps: compressed.reps
+    };
+  }
+
+  return { type: c.BLOCK_RAW, content: src, regeneratedSize: size, reps: reps };
+}
+
+// Build a Compressed_Block: a literals section followed by a sequences
+// section. Returns null when the block cannot be represented this way.
+/**
+ * Cheap test for data that cannot be compressed at all.
+ *
+ * Searching a block of random bytes costs as much as searching a compressible
+ * one and is then thrown away. Two quick passes catch that case: near-flat
+ * byte frequencies mean Huffman coding cannot help, and almost no repeated
+ * four-byte prefixes mean the match finder will not either. Both have to hold,
+ * because random-looking bytes can still repeat at a distance.
+ */
+function looksIncompressible(src, finder, start) {
+  if (src.length < 4096) return false;
+
+  var counts = new Uint32Array(256);
+  for (var i = 0; i < src.length; i++) counts[src[i]]++;
+
+  var entropy = 0;
+  var total = src.length;
+  for (var b = 0; b < 256; b++) {
+    if (counts[b] === 0) continue;
+    var p = counts[b] / total;
+    entropy -= p * Math.log2(p);
+  }
+  if (entropy < 7.5) return false;
+
+  // Sample four-byte prefixes and see how often one recurs, both within this
+  // block and against whatever the match index already holds - earlier blocks
+  // and any dictionary. Missing the second would discard real matches, as it
+  // does for random bytes that happen to repeat a block or more later.
+  var SAMPLE_BITS = 13;
+  var seen = new Int32Array(1 << SAMPLE_BITS).fill(-1);
+  var samples = 0;
+  var repeats = 0;
+
+  var head = finder ? finder.head : null;
+  var chain = finder ? finder.chain : null;
+  var source = finder ? finder.src : null;
+
+  for (var at = 0; at + 4 <= src.length; at += 16) {
+    var v = (src[at] | (src[at + 1] << 8) | (src[at + 2] << 16) | (src[at + 3] << 24)) >>> 0;
+    var slot = (Math.imul(v, 2654435761) >>> (32 - SAMPLE_BITS));
+    samples++;
+
+    if (seen[slot] === v) {
+      repeats++;
+    } else if (head !== null) {
+      // Does anything already indexed start with these four bytes? The hash
+      // is only 16 bits, so the true match is usually not at the head of the
+      // chain once a lot has been indexed; walk a few links before giving up.
+      var candidate = head[matchFinder.hash4(src, at)];
+      var steps = 8;
+      while (candidate >= 0 && steps-- > 0) {
+        if (candidate + 4 <= source.length &&
+            source[candidate] === src[at] &&
+            source[candidate + 1] === src[at + 1] &&
+            source[candidate + 2] === src[at + 2] &&
+            source[candidate + 3] === src[at + 3]) {
+          repeats++;
+          break;
+        }
+        candidate = chain[candidate];
+      }
+    }
+
+    seen[slot] = v;
+  }
+
+  return samples > 64 && repeats / samples < 0.02;
+}
+
+function tryCompressed(src, reps, options, finder, start, end) {
+  if (src.length < c.MIN_MATCH + 1) return null;
+  if (looksIncompressible(src, finder, start)) {
+    // Still index it, so a later block that repeats this one can match it.
+    if (finder) finder.index(start, end);
+    return null;
+  }
+
+  var found = finder
+    ? finder.run(start, end, reps)
+    : matchFinder.findSequences(src, options);
+  if (found.sequences.length === 0) return null;
+
+  var literalsSection = encodeLiterals(found.literals);
+
+  var encoded = sequenceCodec.encodeSequences(found.sequences, reps);
+  if (encoded === null) return null;
+
+  return {
+    content: Buffer.concat([literalsSection, encoded.section]),
+    reps: encoded.reps
+  };
+}
+
+// Pick the cheapest representation for the literals: a single repeated byte,
+// Huffman coding, or storing them raw.
+function encodeLiterals(literals) {
+  if (literals.length > 1 && isRun(literals, 0, literals.length)) {
+    return literalsCodec.writeRleLiterals(literals[0], literals.length);
+  }
+
+  var huff = huffman.compressLiterals(literals);
+  if (huff !== null) {
+    var content = Buffer.concat([huff.tree, huff.streams]);
+    var section = literalsCodec.writeCompressedLiterals(content, literals.length, huff.streamCount);
+    // Only worth it if it actually beats storing them.
+    if (section !== null && section.length < literals.length + 3) return section;
+  }
+
+  return literalsCodec.writeRawLiterals(literals);
+}
+
+exports.encodeBlock = encodeBlock;
+exports.encodeLiterals = encodeLiterals;
+exports.isRun = isRun;
+exports.looksIncompressible = looksIncompressible;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./constants":118,"./huffman":126,"./literals":128,"./match":129,"./sequences":131,"buffer":22}],118:[function(require,module,exports){
+'use strict';
+
+// Constants and code tables from RFC 8878 (Zstandard Compression and the
+// application/zstd Media Type). Section numbers below refer to that document.
+
+exports.MAGIC = 0xFD2FB528;
+exports.MAGIC_SKIPPABLE_MIN = 0x184D2A50;
+exports.MAGIC_SKIPPABLE_MAX = 0x184D2A5F;
+
+// Section 3.1.1.2: Block_Type
+exports.BLOCK_RAW = 0;
+exports.BLOCK_RLE = 1;
+exports.BLOCK_COMPRESSED = 2;
+exports.BLOCK_RESERVED = 3;
+
+// Section 3.1.1.2: a block holds at most 128 KB of regenerated data.
+exports.BLOCK_SIZE_MAX = 128 * 1024;
+
+// Section 3.1.1.3.1: Literals_Block_Type
+exports.LITERALS_RAW = 0;
+exports.LITERALS_RLE = 1;
+exports.LITERALS_COMPRESSED = 2;
+exports.LITERALS_TREELESS = 3;
+
+// Section 3.1.1.3.2: Symbol_Compression_Mode
+exports.MODE_PREDEFINED = 0;
+exports.MODE_RLE = 1;
+exports.MODE_FSE = 2;
+exports.MODE_REPEAT = 3;
+
+// Section 3.1.1.5: starting repeat-offset history for a frame.
+exports.REPEAT_OFFSETS = [1, 4, 8];
+
+// Section 3.1.1.3.2.1: Literals_Length_Code.
+// Codes 0-15 have Baseline == code and no extra bits.
+exports.LL_BASELINE = new Uint32Array([
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024,
+  2048, 4096, 8192, 16384, 32768, 65536
+]);
+exports.LL_BITS = new Uint8Array([
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10,
+  11, 12, 13, 14, 15, 16
+]);
+
+// Section 3.1.1.3.2.1: Match_Length_Code.
+// Codes 0-31 have Baseline == code + 3 and no extra bits.
+exports.ML_BASELINE = new Uint32Array([
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+  35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027,
+  2051, 4099, 8195, 16387, 32771, 65539
+]);
+exports.ML_BITS = new Uint8Array([
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10,
+  11, 12, 13, 14, 15, 16
+]);
+
+// Section 3.1.1.3.2.1: an offset code N carries N extra bits, and
+// Offset_Value = (1 << N) + extra_bits.
+exports.OFFSET_CODE_MAX = 31;
+
+// Section 3.1.1.3.2.2: predefined distributions. A value of -1 means
+// "probability less than 1", which occupies a single low-probability state.
+exports.LL_DEFAULT_ACCURACY = 6;
+exports.LL_DEFAULT_DISTRIBUTION = [
+  4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1,
+  2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1,
+  -1, -1, -1, -1
+];
+
+exports.ML_DEFAULT_ACCURACY = 6;
+exports.ML_DEFAULT_DISTRIBUTION = [
+  1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1,
+  -1, -1, -1, -1, -1
+];
+
+exports.OF_DEFAULT_ACCURACY = 5;
+exports.OF_DEFAULT_DISTRIBUTION = [
+  1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1
+];
+
+// Section 4.1: accuracy log limits.
+exports.LL_FSE_ACCURACY_MAX = 9;
+exports.ML_FSE_ACCURACY_MAX = 9;
+exports.OF_FSE_ACCURACY_MAX = 8;
+
+exports.LL_SYMBOL_MAX = 35;
+exports.ML_SYMBOL_MAX = 52;
+exports.OF_SYMBOL_MAX = 31;
+
+// Section 4.2: Huffman limits.
+exports.HUF_MAX_SYMBOLS = 256;
+exports.HUF_MAX_BITS = 11;
+
+// Minimum match length zstd's sequence format can express (Match_Length_Code 0
+// has a baseline of 3).
+exports.MIN_MATCH = 3;
+
+},{}],119:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Zstandard frame decoding (RFC 8878 Section 3).
+
+var c = require('./constants');
+var fseDecode = require('./fse-decode');
+var huffmanDecode = require('./huffman-decode');
+var repcodes = require('./repcodes');
+var dictionaryFormat = require('./dictionary');
+var xxhash = require('./xxhash64');
+var BitReader = require('./bitstream').BitReader;
+
+var POW2 = new Float64Array(33);
+for (var p2 = 0; p2 < 33; p2++) POW2[p2] = Math.pow(2, p2);
+
+var MASKS = new Int32Array(26);
+for (var mk = 1; mk <= 25; mk++) MASKS[mk] = (1 << mk) - 1;
+
+// Bytes of zero padding placed on each side of a bitstream before decoding.
+// With them, a four-byte read is always in bounds, so the extraction below
+// needs no edge cases and stays small enough for V8 to inline.
+var PAD = 4;
+
+/**
+ * Read `nbBits` ending at bit `pos` of a padded stream. Up to 25 bits, which
+ * is what a 32-bit word covers alongside a seven-bit offset.
+ */
+function extract(bytes, pos, nbBits) {
+  if (nbBits === 0) return 0;
+
+  var low = pos - nbBits + 1;
+  var byteIndex = low >> 3;
+  var word = bytes[byteIndex] |
+    (bytes[byteIndex + 1] << 8) |
+    (bytes[byteIndex + 2] << 16) |
+    (bytes[byteIndex + 3] << 24);
+
+  return (word >>> (low & 7)) & MASKS[nbBits];
+}
+
+/** Copy a bitstream with padding on both sides. */
+function padStream(stream) {
+  var padded = Buffer.alloc(stream.length + PAD * 2);
+  stream.copy(padded, PAD);
+  return padded;
+}
+
+var DICT_ID_SIZE = [0, 1, 2, 4];
+var FCS_SIZE = [0, 2, 4, 8];
+
+/** Parse a frame header (Section 3.1.1.1). */
+function parseFrameHeader(bytes, offset) {
+  if (bytes.length - offset < 5) throw new Error('truncated frame header');
+  if (bytes.readUInt32LE(offset) !== c.MAGIC) throw new Error('not a Zstandard frame');
+
+  var at = offset + 4;
+  var descriptor = bytes[at++];
+
+  var fcsFlag = descriptor >> 6;
+  var singleSegment = (descriptor >> 5) & 1;
+  var checksumFlag = (descriptor >> 2) & 1;
+  var dictIdFlag = descriptor & 3;
+
+  if ((descriptor >> 3) & 1) throw new Error('reserved bit set in frame header');
+
+  var windowSize = 0;
+  if (!singleSegment) {
+    var windowDescriptor = bytes[at++];
+    var exponent = windowDescriptor >> 3;
+    var mantissa = windowDescriptor & 7;
+    var base = Math.pow(2, 10 + exponent);
+    windowSize = base + (base / 8) * mantissa;
+  }
+
+  var dictionaryId = 0;
+  var dictIdSize = DICT_ID_SIZE[dictIdFlag];
+  for (var d = 0; d < dictIdSize; d++) dictionaryId |= bytes[at + d] << (8 * d);
+  at += dictIdSize;
+
+  var contentSize = null;
+  var fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : FCS_SIZE[fcsFlag];
+  if (fcsSize === 1) contentSize = bytes[at];
+  else if (fcsSize === 2) contentSize = bytes.readUInt16LE(at) + 256;
+  else if (fcsSize === 4) contentSize = bytes.readUInt32LE(at);
+  else if (fcsSize === 8) contentSize = Number(bytes.readBigUInt64LE(at));
+  at += fcsSize;
+
+  if (singleSegment && contentSize !== null) windowSize = contentSize;
+
+  return {
+    headerSize: at - offset,
+    windowSize: windowSize,
+    contentSize: contentSize,
+    checksum: checksumFlag === 1,
+    dictionaryId: dictionaryId
+  };
+}
+
+/** Decode a Literals_Section, returning the literals and bytes consumed. */
+function decodeLiterals(bytes, offset, previousTable) {
+  var header = bytes[offset];
+  var type = header & 3;
+  var sizeFormat = (header >> 2) & 3;
+
+  if (type === c.LITERALS_RAW || type === c.LITERALS_RLE) {
+    var regenerated, headerSize;
+    if ((sizeFormat & 1) === 0) {
+      regenerated = header >> 3;
+      headerSize = 1;
+    } else if (sizeFormat === 1) {
+      regenerated = (header >> 4) + (bytes[offset + 1] << 4);
+      headerSize = 2;
+    } else {
+      regenerated = (header >> 4) + (bytes[offset + 1] << 4) + (bytes[offset + 2] << 12);
+      headerSize = 3;
+    }
+
+    if (type === c.LITERALS_RAW) {
+      return {
+        literals: bytes.subarray(offset + headerSize, offset + headerSize + regenerated),
+        size: headerSize + regenerated,
+        table: previousTable
+      };
+    }
+    return {
+      literals: Buffer.alloc(regenerated, bytes[offset + headerSize]),
+      size: headerSize + 1,
+      table: previousTable
+    };
+  }
+
+  // Compressed or treeless: both sizes are present, and the stream count and
+  // field widths follow the size format.
+  var streams = sizeFormat === 0 ? 1 : 4;
+  var regen, compressed, size;
+
+  if (sizeFormat === 0 || sizeFormat === 1) {
+    var v3 = header + (bytes[offset + 1] << 8) + (bytes[offset + 2] << 16);
+    regen = (v3 >> 4) & 0x3FF;
+    compressed = (v3 >> 14) & 0x3FF;
+    size = 3;
+  } else if (sizeFormat === 2) {
+    var v4 = header + (bytes[offset + 1] << 8) + (bytes[offset + 2] << 16) + bytes[offset + 3] * 16777216;
+    regen = Math.floor(v4 / 16) % 16384;
+    compressed = Math.floor(v4 / 262144) % 16384;
+    size = 4;
+  } else {
+    var v5 = header + bytes[offset + 1] * 256 + bytes[offset + 2] * 65536 +
+      bytes[offset + 3] * 16777216 + bytes[offset + 4] * 4294967296;
+    regen = Math.floor(v5 / 16) % 262144;
+    compressed = Math.floor(v5 / 4194304) % 262144;
+    size = 5;
+  }
+
+  var contentStart = offset + size;
+  var table = previousTable;
+  var streamStart = contentStart;
+
+  if (type === c.LITERALS_COMPRESSED) {
+    var tree = huffmanDecode.readTreeDescription(bytes, contentStart);
+    table = huffmanDecode.buildDecodeTable(tree.nbBits, tree.maxBits);
+    streamStart = contentStart + tree.size;
+  } else if (!table) {
+    throw new Error('treeless literals with no previous Huffman table');
+  }
+
+  var literals = Buffer.alloc(regen);
+  var streamsEnd = contentStart + compressed;
+
+  if (streams === 1) {
+    huffmanDecode.decodeStream(bytes.subarray(streamStart, streamsEnd), table, regen, literals, 0);
+  } else {
+    var s1 = bytes.readUInt16LE(streamStart);
+    var s2 = bytes.readUInt16LE(streamStart + 2);
+    var s3 = bytes.readUInt16LE(streamStart + 4);
+    var p = streamStart + 6;
+    var segment = (regen + 3) >> 2;
+
+    huffmanDecode.decodeStream(bytes.subarray(p, p + s1), table, segment, literals, 0); p += s1;
+    huffmanDecode.decodeStream(bytes.subarray(p, p + s2), table, segment, literals, segment); p += s2;
+    huffmanDecode.decodeStream(bytes.subarray(p, p + s3), table, segment, literals, 2 * segment); p += s3;
+    huffmanDecode.decodeStream(bytes.subarray(p, streamsEnd), table, regen - 3 * segment, literals, 3 * segment);
+  }
+
+  return { literals: literals, size: size + compressed, table: table };
+}
+
+function readSequenceCount(bytes, offset) {
+  var first = bytes[offset];
+  if (first === 0) return { count: 0, size: 1 };
+  if (first < 128) return { count: first, size: 1 };
+  if (first < 255) return { count: ((first - 128) << 8) + bytes[offset + 1], size: 2 };
+  return { count: bytes[offset + 1] + (bytes[offset + 2] << 8) + 0x7F00, size: 3 };
+}
+
+function tableForMode(mode, bytes, offset, defaults, previous, maxSymbol, maxAccuracy) {
+  if (mode === c.MODE_PREDEFINED) {
+    return { table: defaults, size: 0 };
+  }
+  if (mode === c.MODE_RLE) {
+    return { table: fseDecode.rleDTable(bytes[offset]), size: 1 };
+  }
+  if (mode === c.MODE_REPEAT) {
+    if (!previous) throw new Error('repeat mode with no previous table');
+    return { table: previous, size: 0 };
+  }
+  var description = fseDecode.readTableDescription(bytes, offset, maxSymbol, maxAccuracy);
+  return {
+    table: fseDecode.buildDTable(description.normalized, description.accuracyLog, description.maxSymbol),
+    size: description.size
+  };
+}
+
+
+// Predefined decoding tables, built once.
+var LL_DEFAULT = fseDecode.buildDTable(
+  Int16Array.from(c.LL_DEFAULT_DISTRIBUTION), c.LL_DEFAULT_ACCURACY, c.LL_SYMBOL_MAX);
+var ML_DEFAULT = fseDecode.buildDTable(
+  Int16Array.from(c.ML_DEFAULT_DISTRIBUTION), c.ML_DEFAULT_ACCURACY, c.ML_SYMBOL_MAX);
+var OF_DEFAULT = fseDecode.buildDTable(
+  Int16Array.from(c.OF_DEFAULT_DISTRIBUTION), c.OF_DEFAULT_ACCURACY, 28);
+
+/**
+ * Decode a Sequences_Section.
+ *
+ * Reading mirrors the encoder exactly: the three states come first, then for
+ * each sequence the offset, match length and literal length extras, then the
+ * state updates - except after the final sequence, which has none.
+ */
+function decodeSequences(bytes, offset, end, tables) {
+  var counted = readSequenceCount(bytes, offset);
+  var at = offset + counted.size;
+
+  if (counted.count === 0) {
+    return { count: 0, tables: tables };
+  }
+
+  var modes = bytes[at++];
+  var llMode = modes >> 6;
+  var ofMode = (modes >> 4) & 3;
+  var mlMode = (modes >> 2) & 3;
+  if ((modes & 3) !== 0) throw new Error('reserved bits set in Symbol_Compression_Modes');
+
+  var ll = tableForMode(llMode, bytes, at, LL_DEFAULT, tables.ll, c.LL_SYMBOL_MAX, c.LL_FSE_ACCURACY_MAX);
+  at += ll.size;
+  var of = tableForMode(ofMode, bytes, at, OF_DEFAULT, tables.of, c.OF_SYMBOL_MAX, c.OF_FSE_ACCURACY_MAX);
+  at += of.size;
+  var ml = tableForMode(mlMode, bytes, at, ML_DEFAULT, tables.ml, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX);
+  at += ml.size;
+
+  var raw = bytes.subarray(at, end);
+  var reader = new BitReader(raw);
+
+  // Work on a padded copy so every read is a plain in-bounds word load.
+  var stream = padStream(raw);
+  var position = reader.pos + PAD * 8;
+
+  var llState = extract(stream, position, ll.table.accuracyLog);
+  position -= ll.table.accuracyLog;
+  var ofState = extract(stream, position, of.table.accuracyLog);
+  position -= of.table.accuracyLog;
+  var mlState = extract(stream, position, ml.table.accuracyLog);
+  position -= ml.table.accuracyLog;
+
+  var llSymbols = ll.table.symbol, llBits = ll.table.bits, llBase = ll.table.base;
+  var ofSymbols = of.table.symbol, ofBits = of.table.bits, ofBase = of.table.base;
+  var mlSymbols = ml.table.symbol, mlBits = ml.table.bits, mlBase = ml.table.base;
+
+  var LL_BASE = c.LL_BASELINE, LL_EXTRA = c.LL_BITS;
+  var ML_BASE = c.ML_BASELINE, ML_EXTRA = c.ML_BITS;
+
+  // Flat arrays rather than an object per sequence: a dense block holds
+  // thousands of them, and the allocation shows up in profiles.
+  var literalLengths = new Uint32Array(counted.count);
+  var matchLengths = new Uint32Array(counted.count);
+  var offBases = new Uint32Array(counted.count);
+
+  var lastIndex = counted.count - 1;
+
+  for (var i = 0; i < counted.count; i++) {
+    var llCode = llSymbols[llState];
+    var mlCode = mlSymbols[mlState];
+    var ofCode = ofSymbols[ofState];
+
+    // An offset code can exceed the 25-bit fast path, so it goes through the
+    // reader; the rest never do.
+    // An offset code can exceed what one word covers, so it is taken in two
+    // parts, the more significant first.
+    if (ofCode > 25) {
+      var high = extract(stream, position, ofCode - 16);
+      position -= ofCode - 16;
+      offBases[i] = POW2[ofCode] + high * 65536 + extract(stream, position, 16);
+      position -= 16;
+    } else {
+      offBases[i] = POW2[ofCode] + extract(stream, position, ofCode);
+      position -= ofCode;
+    }
+
+    var mlExtra = ML_EXTRA[mlCode];
+    matchLengths[i] = ML_BASE[mlCode] + extract(stream, position, mlExtra);
+    position -= mlExtra;
+
+    var llExtra = LL_EXTRA[llCode];
+    literalLengths[i] = LL_BASE[llCode] + extract(stream, position, llExtra);
+    position -= llExtra;
+
+    if (i < lastIndex) {
+      var llNb = llBits[llState];
+      llState = llBase[llState] + extract(stream, position, llNb);
+      position -= llNb;
+
+      var mlNb = mlBits[mlState];
+      mlState = mlBase[mlState] + extract(stream, position, mlNb);
+      position -= mlNb;
+
+      var ofNb = ofBits[ofState];
+      ofState = ofBase[ofState] + extract(stream, position, ofNb);
+      position -= ofNb;
+    }
+  }
+
+  return {
+    count: counted.count,
+    literalLengths: literalLengths,
+    matchLengths: matchLengths,
+    offBases: offBases,
+    tables: { ll: ll.table, of: of.table, ml: ml.table }
+  };
+}
+
+/**
+ * Turn sequences and literals into output bytes (Section 3.1.1.4).
+ *
+ * `output` already holds everything decoded so far, including any dictionary,
+ * because matches reach back into it.
+ */
+function executeSequences(decoded, literals, output, written, reps) {
+  var literalPosition = 0;
+  var count = decoded.count;
+  var literalLengths = decoded.literalLengths;
+  var matchLengths = decoded.matchLengths;
+  var offBases = decoded.offBases;
+
+  var rep0 = reps[0];
+  var rep1 = reps[1];
+  var rep2 = reps[2];
+
+  for (var i = 0; i < count; i++) {
+    var literalLength = literalLengths[i];
+    var matchLength = matchLengths[i];
+    var offBase = offBases[i];
+    var offset;
+
+    if (offBase > 3) {
+      offset = offBase - 3;
+      rep2 = rep1; rep1 = rep0; rep0 = offset;
+    } else {
+      // Section 3.1.1.5: with no literals the three slots shift by one, and
+      // code 3 then means the most recent offset minus one.
+      var index = offBase - 1 + (literalLength === 0 ? 1 : 0);
+      offset = index === 0 ? rep0 : index === 1 ? rep1 : index === 2 ? rep2 : rep0 - 1;
+      if (offset <= 0) throw new Error('invalid repeat offset');
+
+      if (index !== 0) {
+        var previous = rep0;
+        if (index >= 2) rep2 = rep1;
+        rep1 = previous;
+        rep0 = offset;
+      }
+    }
+
+    if (literalLength > 0) {
+      if (literalLength < 24) {
+        for (var l = 0; l < literalLength; l++) output[written + l] = literals[literalPosition + l];
+      } else {
+        literals.copy(output, written, literalPosition, literalPosition + literalLength);
+      }
+      literalPosition += literalLength;
+      written += literalLength;
+    }
+
+    if (offset > written) throw new Error('match offset reaches before the start of the stream');
+
+    var from = written - offset;
+
+    if (offset >= matchLength) {
+      // Source and destination do not overlap, so this is a plain block move.
+      output.copy(output, written, from, from + matchLength);
+    } else {
+      // An overlapping match means "repeat what you just wrote". Lay down one
+      // period, then double the region repeatedly: because the run is
+      // periodic with this offset, everything already written can be copied
+      // forward in one go. A long run at a short offset takes a handful of
+      // copies instead of thousands.
+      if (offset < 16) {
+        for (var p = 0; p < offset; p++) output[written + p] = output[from + p];
+      } else {
+        output.copy(output, written, from, from + offset);
+      }
+
+      var filled = offset;
+      while (filled < matchLength) {
+        var span = filled < matchLength - filled ? filled : matchLength - filled;
+        output.copy(output, written + filled, written, written + span);
+        filled += span;
+      }
+    }
+    written += matchLength;
+  }
+
+  var tail = literals.length - literalPosition;
+  if (tail > 0) {
+    literals.copy(output, written, literalPosition, literals.length);
+    written += tail;
+  }
+
+  return { written: written, reps: [rep0, rep1, rep2] };
+}
+
+/**
+ * Decode every frame in `bytes` and join the results.
+ *
+ * A Zstandard stream may hold several frames back to back, and may carry
+ * skippable frames - user metadata that decoders step over.
+ */
+function decodeFrame(bytes, options) {
+  var pieces = [];
+  var at = 0;
+  var total = 0;
+
+  while (at < bytes.length) {
+    if (bytes.length - at < 4) throw new Error('trailing bytes are not a frame');
+
+    var magic = bytes.readUInt32LE(at);
+
+    // Section 3.1.2: a skippable frame is a magic in the reserved range
+    // followed by its size, and carries nothing a decoder needs.
+    if (magic >= c.MAGIC_SKIPPABLE_MIN && magic <= c.MAGIC_SKIPPABLE_MAX) {
+      if (bytes.length - at < 8) throw new Error('truncated skippable frame');
+      var skipSize = bytes.readUInt32LE(at + 4);
+      at += 8 + skipSize;
+      if (at > bytes.length) throw new Error('skippable frame runs past the end');
+      continue;
+    }
+
+    var decoded = decodeSingleFrame(bytes, at, options);
+    pieces.push(decoded.content);
+    total += decoded.content.length;
+    at = decoded.end;
+  }
+
+  if (pieces.length === 0) throw new Error('not a Zstandard frame');
+  if (pieces.length === 1) return pieces[0];
+  return Buffer.concat(pieces, total);
+}
+
+/**
+ * Decode the frame starting at `offset`.
+ *
+ * @returns {{content: Buffer, end: number}}
+ */
+function decodeSingleFrame(bytes, offset, options) {
+  options = options || {};
+  var parsed = options.dictionary
+    ? dictionaryFormat.parse(options.dictionary)
+    : dictionaryFormat.parse(Buffer.alloc(0));
+  var dictionary = parsed.content;
+
+  var header = parseFrameHeader(bytes, offset);
+  var at = offset + header.headerSize;
+
+  // Output is preceded by the dictionary, so matches can reach into it.
+  var capacity = dictionary.length +
+    (header.contentSize !== null ? header.contentSize : Math.max((bytes.length - at) * 8, 1 << 20));
+  var output = Buffer.alloc(capacity);
+  dictionary.copy(output, 0);
+
+  var written = dictionary.length;
+
+  // A formal dictionary supplies starting repeat offsets and entropy tables
+  // for the repeat modes; a raw one supplies only content.
+  var reps = parsed.reps.slice();
+  var tables = { ll: parsed.tables.ll, of: parsed.tables.of, ml: parsed.tables.ml };
+  var huffmanTable = parsed.huffman;
+
+  for (;;) {
+    if (at + 3 > bytes.length) throw new Error('truncated block header');
+
+    var blockHeader = bytes.readUIntLE(at, 3);
+    at += 3;
+
+    var last = blockHeader & 1;
+    var type = (blockHeader >> 1) & 3;
+    var size = blockHeader >> 3;
+
+    if (type === c.BLOCK_RAW) {
+      output = ensure(output, written + size);
+      bytes.copy(output, written, at, at + size);
+      written += size;
+      at += size;
+    } else if (type === c.BLOCK_RLE) {
+      output = ensure(output, written + size);
+      output.fill(bytes[at], written, written + size);
+      written += size;
+      at += 1;
+    } else if (type === c.BLOCK_COMPRESSED) {
+      var blockEnd = at + size;
+      var decoded = decodeLiterals(bytes, at, huffmanTable);
+      huffmanTable = decoded.table;
+
+      var seq = decodeSequences(bytes, at + decoded.size, blockEnd, tables);
+      tables = seq.tables;
+
+      output = ensure(output, written + decoded.literals.length + totalMatch(seq));
+
+      var result = executeSequences(seq, decoded.literals, output, written, reps);
+      written = result.written;
+      reps = result.reps;
+      at = blockEnd;
+    } else {
+      throw new Error('reserved block type');
+    }
+
+    if (last) break;
+  }
+
+  var content = output.subarray(dictionary.length, written);
+
+  if (header.checksum) {
+    if (at + 4 > bytes.length) throw new Error('missing content checksum');
+    var stored = bytes.readUInt32LE(at);
+    if (stored !== xxhash.checksum32(content)) {
+      throw new Error('content checksum mismatch');
+    }
+  }
+
+  if (header.checksum) at += 4;
+
+  // Returning the view avoids copying the whole output again. It is only
+  // worth copying when the buffer is much larger than what was decoded.
+  return {
+    content: output.length - written > (written >> 2) ? Buffer.from(content) : content,
+    end: at
+  };
+}
+
+function totalMatch(decoded) {
+  var sum = 0;
+  var lengths = decoded.matchLengths;
+  for (var i = 0; i < decoded.count; i++) sum += lengths[i];
+  return sum;
+}
+
+function ensure(buffer, needed) {
+  if (needed <= buffer.length) return buffer;
+  var size = buffer.length * 2;
+  while (size < needed) size *= 2;
+  var next = Buffer.alloc(size);
+  buffer.copy(next);
+  return next;
+}
+
+/**
+ * Incremental frame decoder.
+ *
+ * Blocks are decoded as their bytes arrive, so input does not have to be
+ * complete before output starts. Decoded output is retained because matches
+ * reach back into it.
+ */
+function StreamingDecoder(onData, options) {
+  options = options || {};
+  this.onData = onData;
+  this.dictionary = options.dictionary || Buffer.alloc(0);
+
+  var parsedDictionary = dictionaryFormat.parse(this.dictionary);
+  this.dictionary = parsedDictionary.content;
+
+  this.input = Buffer.alloc(0);
+  this.consumed = 0;
+
+  this.header = null;
+  this.output = Buffer.alloc(Math.max(this.dictionary.length * 2, 1 << 16));
+  this.dictionary.copy(this.output, 0);
+  this.written = this.dictionary.length;
+  this.emitted = this.dictionary.length;
+
+  this.reps = parsedDictionary.reps.slice();
+  this.tables = {
+    ll: parsedDictionary.tables.ll,
+    of: parsedDictionary.tables.of,
+    ml: parsedDictionary.tables.ml
+  };
+  this.huffmanTable = parsedDictionary.huffman;
+  this.lastBlockSeen = false;
+  this.done = false;
+}
+
+StreamingDecoder.prototype.push = function (chunk, final) {
+  if (this.done) {
+    if (chunk && chunk.length) throw new Error('push after the frame ended');
+    return this;
+  }
+
+  this.input = this.consumed > 0
+    ? Buffer.concat([this.input.subarray(this.consumed), chunk])
+    : Buffer.concat([this.input, chunk]);
+  this.consumed = 0;
+
+  this._advance();
+
+  if (final && !this.done) {
+    throw new Error('input ended before the frame was complete');
+  }
+  return this;
+};
+
+StreamingDecoder.prototype._advance = function () {
+  // The last block may arrive before the trailing checksum does.
+  if (this.lastBlockSeen) {
+    this._finish();
+    return;
+  }
+
+  if (this.header === null) {
+    // The header is at most 14 bytes; wait until it can be read whole.
+    if (this.input.length < 6) return;
+    try {
+      this.header = parseFrameHeader(this.input, 0);
+    } catch (e) {
+      if (this.input.length < 18) return;
+      throw e;
+    }
+    this.consumed = this.header.headerSize;
+  }
+
+  for (;;) {
+    var available = this.input.length - this.consumed;
+    if (available < 3) return;
+
+    var blockHeader = this.input.readUIntLE(this.consumed, 3);
+    var last = blockHeader & 1;
+    var type = (blockHeader >> 1) & 3;
+    var size = blockHeader >> 3;
+
+    var bodySize = type === c.BLOCK_RLE ? 1 : size;
+    if (available < 3 + bodySize) return;
+
+    var at = this.consumed + 3;
+
+    if (type === c.BLOCK_RAW) {
+      this.output = ensure(this.output, this.written + size);
+      this.input.copy(this.output, this.written, at, at + size);
+      this.written += size;
+    } else if (type === c.BLOCK_RLE) {
+      this.output = ensure(this.output, this.written + size);
+      this.output.fill(this.input[at], this.written, this.written + size);
+      this.written += size;
+    } else if (type === c.BLOCK_COMPRESSED) {
+      var blockEnd = at + size;
+      var decoded = decodeLiterals(this.input, at, this.huffmanTable);
+      this.huffmanTable = decoded.table;
+
+      var seq = decodeSequences(this.input, at + decoded.size, blockEnd, this.tables);
+      this.tables = seq.tables;
+
+      this.output = ensure(this.output, this.written + decoded.literals.length + totalMatch(seq));
+
+      var result = executeSequences(seq, decoded.literals, this.output, this.written, this.reps);
+      this.written = result.written;
+      this.reps = result.reps;
+    } else {
+      throw new Error('reserved block type');
+    }
+
+    this.consumed = 3 + bodySize + this.consumed;
+
+    if (last) {
+      this.lastBlockSeen = true;
+      this._finish();
+      return;
+    }
+
+    this._flush(false);
+  }
+};
+
+StreamingDecoder.prototype._flush = function (final) {
+  if (this.written > this.emitted || final) {
+    var chunk = Buffer.from(this.output.subarray(this.emitted, this.written));
+    this.emitted = this.written;
+    this.onData(chunk, final);
+  }
+};
+
+StreamingDecoder.prototype._finish = function () {
+  if (this.header.checksum) {
+    // Wait for the trailing checksum rather than failing on a short read.
+    if (this.input.length - this.consumed < 4) return;
+    var stored = this.input.readUInt32LE(this.consumed);
+    var content = this.output.subarray(this.dictionary.length, this.written);
+    if (stored !== xxhash.checksum32(content)) {
+      throw new Error('content checksum mismatch');
+    }
+    this.consumed += 4;
+  }
+
+  this.done = true;
+  this._flush(true);
+};
+
+exports.StreamingDecoder = StreamingDecoder;
+exports.decodeFrame = decodeFrame;
+exports.decodeSingleFrame = decodeSingleFrame;
+exports.decodeSequences = decodeSequences;
+exports.executeSequences = executeSequences;
+
+exports.parseFrameHeader = parseFrameHeader;
+exports.decodeLiterals = decodeLiterals;
+exports.readSequenceCount = readSequenceCount;
+exports.tableForMode = tableForMode;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./bitstream":116,"./constants":118,"./dictionary":120,"./fse-decode":122,"./huffman-decode":125,"./repcodes":130,"./xxhash64":133,"buffer":22}],120:[function(require,module,exports){
+'use strict';
+
+// Dictionary parsing (RFC 8878 Section 5).
+//
+// Two kinds exist. A formal dictionary starts with a magic number and carries
+// entropy tables and starting repeat offsets ahead of its content. Anything
+// else is a raw-content dictionary: the bytes are simply treated as data
+// preceding the frame.
+
+var c = require('./constants');
+var fseDecode = require('./fse-decode');
+var huffmanDecode = require('./huffman-decode');
+var repcodes = require('./repcodes');
+
+var MAGIC = 0xEC30A437;
+
+/**
+ * @param {Buffer} bytes
+ * @returns {{id: number, content: Buffer, reps: number[], huffman: object|null,
+ *            tables: {ll: object|null, of: object|null, ml: object|null}}}
+ */
+function parse(bytes) {
+  if (bytes.length < 8 || bytes.readUInt32LE(0) !== MAGIC) {
+    return rawDictionary(bytes);
+  }
+
+  var id = bytes.readUInt32LE(4);
+  var at = 8;
+
+  // Order is fixed: literals Huffman table, then offsets, match lengths and
+  // literal lengths, then the three starting repeat offsets.
+  var tree = huffmanDecode.readTreeDescription(bytes, at);
+  var huffman = huffmanDecode.buildDecodeTable(tree.nbBits, tree.maxBits);
+  at += tree.size;
+
+  var of = readTable(bytes, at, c.OF_SYMBOL_MAX, c.OF_FSE_ACCURACY_MAX);
+  at += of.size;
+  var ml = readTable(bytes, at, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX);
+  at += ml.size;
+  var ll = readTable(bytes, at, c.LL_SYMBOL_MAX, c.LL_FSE_ACCURACY_MAX);
+  at += ll.size;
+
+  if (bytes.length - at < 12) throw new Error('dictionary ends before its repeat offsets');
+
+  var reps = [
+    bytes.readUInt32LE(at),
+    bytes.readUInt32LE(at + 4),
+    bytes.readUInt32LE(at + 8)
+  ];
+  at += 12;
+
+  var content = bytes.subarray(at);
+
+  reps.forEach(function (offset) {
+    if (offset <= 0 || offset > content.length) {
+      throw new Error('dictionary repeat offset lies outside its content');
+    }
+  });
+
+  return {
+    id: id,
+    content: content,
+    reps: reps,
+    huffman: huffman,
+    tables: { ll: ll.table, of: of.table, ml: ml.table }
+  };
+}
+
+function readTable(bytes, at, maxSymbol, maxAccuracy) {
+  var description = fseDecode.readTableDescription(bytes, at, maxSymbol, maxAccuracy);
+  return {
+    table: fseDecode.buildDTable(description.normalized, description.accuracyLog, description.maxSymbol),
+    size: description.size
+  };
+}
+
+function rawDictionary(bytes) {
+  return {
+    id: 0,
+    content: bytes,
+    reps: repcodes.INITIAL.slice(),
+    huffman: null,
+    tables: { ll: null, of: null, ml: null }
+  };
+}
+
+exports.MAGIC = MAGIC;
+exports.parse = parse;
+exports.isFormal = function (bytes) {
+  return bytes.length >= 8 && bytes.readUInt32LE(0) === MAGIC;
+};
+
+},{"./constants":118,"./fse-decode":122,"./huffman-decode":125,"./repcodes":130}],121:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Frame and block framing (RFC 8878 Section 3.1.1).
+
+var c = require('./constants');
+
+// Section 3.1.1.1.1: Frame_Header_Descriptor and the fields it selects.
+//
+// A frame may either declare Single_Segment_flag, in which case the decoder's
+// window must span the whole content and no Window_Descriptor is written, or
+// carry an explicit Window_Descriptor. We use a single segment when the
+// content is small enough that requiring a window that size is harmless, and
+// an explicit window otherwise.
+var SINGLE_SEGMENT_LIMIT = 256 * 1024;
+
+function windowLogFor(size) {
+  var log = 10;
+  while (log < 27 && (1 << log) < size) log++;
+  return log;
+}
+
+function writeFrameHeader(contentSize, options) {
+  options = options || {};
+  var checksum = options.checksum ? 1 : 0;
+  var known = contentSize !== null && contentSize !== undefined;
+
+  // A dictionary sits behind the frame content, so the window has to span
+  // both and a single segment will not do.
+  var minimumWindow = options.minimumWindow || 0;
+  var dictionaryId = options.dictionaryId || 0;
+
+  // Section 3.1.1.1.1.6: the flag selects a 0, 1, 2 or 4 byte field.
+  var dictIdFlag = 0;
+  if (dictionaryId > 0) {
+    dictIdFlag = dictionaryId < 256 ? 1 : (dictionaryId < 65536 ? 2 : 3);
+  }
+
+  var singleSegment = known && contentSize <= SINGLE_SEGMENT_LIMIT &&
+    minimumWindow <= contentSize;
+
+  // Section 3.1.1.1.1: Frame_Content_Size_flag selects the field width. A
+  // flag of 0 means one byte when Single_Segment_flag is set, and no field
+  // otherwise.
+  // The 2-byte field stores contentSize - 256, so it cannot express anything
+  // smaller than 256. A single segment can use the 1-byte field instead;
+  // without one, small sizes fall through to the 4-byte field.
+  var fcsFlag;
+  if (!known) fcsFlag = 0;
+  else if (singleSegment && contentSize < 256) fcsFlag = 0;
+  else if (contentSize >= 256 && contentSize < 65536 + 256) fcsFlag = 1;
+  else if (contentSize < 0x100000000) fcsFlag = 2;
+  else fcsFlag = 3;
+
+  var bytes = [];
+  var header = Buffer.alloc(4);
+  header.writeUInt32LE(c.MAGIC, 0);
+  bytes.push(header);
+
+  var descriptor = (fcsFlag << 6) | (singleSegment ? 0x20 : 0) | (checksum << 2) | dictIdFlag;
+  var rest = Buffer.alloc(14);
+  var p = 0;
+  rest[p++] = descriptor;
+
+  if (!singleSegment) {
+    // Section 3.1.1.1.2: Window_Size = base + (base / 8) * mantissa.
+    var span = Math.max(known ? contentSize : 0, minimumWindow);
+    var log = span > 0 ? windowLogFor(span) : 23;
+    rest[p++] = ((log - 10) << 3);
+  }
+
+  if (dictIdFlag === 1) rest.writeUInt8(dictionaryId, p), p += 1;
+  else if (dictIdFlag === 2) rest.writeUInt16LE(dictionaryId, p), p += 2;
+  else if (dictIdFlag === 3) rest.writeUInt32LE(dictionaryId, p), p += 4;
+
+  if (known) {
+    if (fcsFlag === 0 && singleSegment) rest.writeUInt8(contentSize, p), p += 1;
+    else if (fcsFlag === 1) rest.writeUInt16LE(contentSize - 256, p), p += 2;
+    else if (fcsFlag === 2) rest.writeUInt32LE(contentSize, p), p += 4;
+    else if (fcsFlag === 3) rest.writeBigUInt64LE(BigInt(contentSize), p), p += 8;
+  }
+
+  bytes.push(rest.subarray(0, p));
+  return Buffer.concat(bytes);
+}
+
+// Section 3.1.1.2: Block_Header is three bytes, little-endian:
+// bit 0 Last_Block, bits 2-1 Block_Type, bits 23-3 Block_Size.
+function writeBlockHeader(size, type, last) {
+  var header = Buffer.alloc(3);
+  header.writeUIntLE((size << 3) | (type << 1) | (last ? 1 : 0), 0, 3);
+  return header;
+}
+
+exports.writeFrameHeader = writeFrameHeader;
+exports.writeBlockHeader = writeBlockHeader;
+exports.windowLogFor = windowLogFor;
+exports.SINGLE_SEGMENT_LIMIT = SINGLE_SEGMENT_LIMIT;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./constants":118,"buffer":22}],122:[function(require,module,exports){
+'use strict';
+
+// FSE decoding: reading a table description and building a decoding table
+// (RFC 8878 Section 4.1).
+
+var fse = require('./fse');
+
+/**
+ * Read a table description from `bytes` starting at `offset`.
+ * @returns {{normalized: Int16Array, maxSymbol: number, accuracyLog: number, size: number}}
+ */
+function readTableDescription(bytes, offset, maxSymbolAllowed, maxAccuracyLog) {
+  var bitPosition = 0;
+  var start = offset;
+
+  function peek(count) {
+    var value = 0;
+    for (var i = 0; i < count; i++) {
+      var index = bitPosition + i;
+      var byte = bytes[offset + (index >> 3)];
+      if (byte === undefined) byte = 0;
+      value |= ((byte >> (index & 7)) & 1) << i;
+    }
+    return value;
+  }
+
+  function take(count) {
+    var value = peek(count);
+    bitPosition += count;
+    return value;
+  }
+
+  var accuracyLog = take(4) + 5;
+  if (accuracyLog > maxAccuracyLog) throw new Error('FSE accuracy log too large: ' + accuracyLog);
+
+  var tableSize = 1 << accuracyLog;
+  var normalized = new Int16Array(maxSymbolAllowed + 1);
+
+  var remaining = tableSize + 1;
+  var threshold = tableSize;
+  var nbBits = accuracyLog + 1;
+  var symbol = 0;
+
+  while (remaining > 1 && symbol <= maxSymbolAllowed) {
+    var max = (2 * threshold - 1) - remaining;
+    var value;
+
+    var low = peek(nbBits - 1);
+    if (max > 0 && low < max) {
+      bitPosition += nbBits - 1;
+      value = low;
+    } else {
+      value = take(nbBits);
+      if (value >= threshold) value -= max;
+    }
+
+    var probability = value - 1;
+    normalized[symbol++] = probability;
+    remaining -= probability < 0 ? -probability : probability;
+
+    if (probability === 0) {
+      // A zero is followed by 2-bit repeat codes counting further zeroes.
+      for (;;) {
+        var repeat = take(2);
+        symbol += repeat;
+        if (repeat !== 3) break;
+      }
+      if (symbol > maxSymbolAllowed + 1) throw new Error('FSE table overran its alphabet');
+    }
+
+    while (remaining < threshold) {
+      nbBits--;
+      threshold >>= 1;
+    }
+  }
+
+  return {
+    normalized: normalized,
+    maxSymbol: symbol - 1,
+    accuracyLog: accuracyLog,
+    size: (bitPosition + 7) >> 3
+  };
+}
+
+/**
+ * Build a decoding table.
+ *
+ * Symbols are spread exactly as the encoder spreads them, then each state
+ * records which symbol it yields, how many bits to read next, and the base
+ * the next state is computed from.
+ */
+function buildDTable(normalized, accuracyLog, maxSymbol) {
+  var tableSize = 1 << accuracyLog;
+  var tableMask = tableSize - 1;
+  var step = fse.tableStep(tableSize);
+
+  var symbols = new Uint8Array(tableSize);
+  var highThreshold = tableSize - 1;
+
+  for (var s = 0; s <= maxSymbol; s++) {
+    if (normalized[s] === -1) symbols[highThreshold--] = s;
+  }
+
+  var position = 0;
+  for (var sym = 0; sym <= maxSymbol; sym++) {
+    for (var n = 0; n < normalized[sym]; n++) {
+      symbols[position] = sym;
+      position = (position + step) & tableMask;
+      while (position > highThreshold) position = (position + step) & tableMask;
+    }
+  }
+
+  var nextCount = new Uint32Array(maxSymbol + 1);
+  for (var t = 0; t <= maxSymbol; t++) {
+    nextCount[t] = normalized[t] === -1 ? 1 : normalized[t];
+  }
+
+  var symbolOf = new Uint8Array(tableSize);
+  var bitsOf = new Uint8Array(tableSize);
+  var baseOf = new Uint16Array(tableSize);
+
+  for (var u = 0; u < tableSize; u++) {
+    var symbolHere = symbols[u];
+    var next = nextCount[symbolHere]++;
+    var bits = accuracyLog - fse.highBit(next);
+
+    symbolOf[u] = symbolHere;
+    bitsOf[u] = bits;
+    baseOf[u] = ((next << bits) - tableSize) & 0xFFFF;
+  }
+
+  return {
+    accuracyLog: accuracyLog,
+    symbol: symbolOf,
+    bits: bitsOf,
+    base: baseOf
+  };
+}
+
+/** A table where every state yields the same symbol and consumes no bits. */
+function rleDTable(symbol) {
+  return {
+    accuracyLog: 0,
+    symbol: Uint8Array.from([symbol]),
+    bits: Uint8Array.from([0]),
+    base: Uint16Array.from([0])
+  };
+}
+
+exports.readTableDescription = readTableDescription;
+exports.buildDTable = buildDTable;
+exports.rleDTable = rleDTable;
+
+},{"./fse":124}],123:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Normalising symbol counts and writing FSE table descriptions
+// (RFC 8878 Section 4.1.1).
+
+var fse = require('./fse');
+
+/**
+ * Pick an accuracy log.
+ *
+ * More states model the distribution more precisely, but the table has to be
+ * transmitted, so the table should not outgrow the data it codes. Start with
+ * enough states to give every symbol one, then add headroom while both the
+ * alphabet and the sequence count justify it.
+ */
+function chooseAccuracyLog(distinctSymbols, maxLog, sequenceCount) {
+  var log = 5;
+  while ((1 << log) < distinctSymbols && log < maxLog) log++;
+
+  while (log < maxLog &&
+         (1 << (log + 1)) <= distinctSymbols * 16 &&
+         (1 << (log + 1)) <= sequenceCount) {
+    log++;
+  }
+
+  return log;
+}
+
+/**
+ * Scale raw counts onto 2^accuracyLog, giving every present symbol at least
+ * one state so the table stays usable.
+ *
+ * @returns {Int16Array|null} null if the alphabet does not fit the table.
+ */
+function normalize(counts, maxSymbol, accuracyLog) {
+  var tableSize = 1 << accuracyLog;
+
+  var total = 0;
+  var present = 0;
+  for (var s = 0; s <= maxSymbol; s++) {
+    total += counts[s];
+    if (counts[s] > 0) present++;
+  }
+  if (total === 0 || present > tableSize) return null;
+
+  var normalized = new Int16Array(maxSymbol + 1);
+  var distributed = 0;
+  var largest = -1;
+
+  for (var i = 0; i <= maxSymbol; i++) {
+    if (counts[i] === 0) continue;
+
+    var share = Math.floor((counts[i] * tableSize) / total);
+    if (share < 1) share = 1;
+    normalized[i] = share;
+    distributed += share;
+
+    if (largest === -1 || counts[i] > counts[largest]) largest = i;
+  }
+
+  // Settle the rounding error on the most frequent symbol, which can absorb
+  // it with the least distortion.
+  var slack = tableSize - distributed;
+  if (slack !== 0) {
+    normalized[largest] += slack;
+
+    // If that overshoots, take the excess from whatever else can spare it.
+    while (normalized[largest] < 1) {
+      var donor = -1;
+      for (var d = 0; d <= maxSymbol; d++) {
+        if (d !== largest && normalized[d] > 1 && (donor === -1 || normalized[d] > normalized[donor])) donor = d;
+      }
+      if (donor === -1) return null;
+      normalized[donor]--;
+      normalized[largest]++;
+    }
+  }
+
+  var check = 0;
+  for (var v = 0; v <= maxSymbol; v++) check += normalized[v];
+  if (check !== tableSize) return null;
+
+  return normalized;
+}
+
+/**
+ * Write the table description.
+ *
+ * The field width shrinks as probability points are used up, and small values
+ * within a field use one bit fewer. Runs of zero-probability symbols are
+ * followed by 2-bit repeat codes.
+ */
+function writeTableDescription(normalized, maxSymbol, accuracyLog) {
+  var bits = [];
+  var bitCount = 0;
+  var accumulator = 0;
+
+  function push(value, count) {
+    accumulator |= (value & ((1 << count) - 1)) << bitCount;
+    bitCount += count;
+    while (bitCount >= 8) {
+      bits.push(accumulator & 0xFF);
+      accumulator >>>= 8;
+      bitCount -= 8;
+    }
+  }
+
+  push(accuracyLog - 5, 4);
+
+  var tableSize = 1 << accuracyLog;
+  var remaining = tableSize + 1;
+  var threshold = tableSize;
+  var nbBits = accuracyLog + 1;
+
+  var symbol = 0;
+  var last = maxSymbol;
+  while (last > 0 && normalized[last] === 0) last--;
+
+  while (symbol <= last && remaining > 1) {
+    var probability = normalized[symbol];
+    var value = probability + 1; // -1 becomes 0, 0 becomes 1
+    var max = (2 * threshold - 1) - remaining;
+
+    if (max > 0 && value < max) {
+      push(value, nbBits - 1);
+    } else if (value < threshold) {
+      push(value, nbBits);
+    } else {
+      push(value + max, nbBits);
+    }
+
+    remaining -= probability < 0 ? -probability : probability;
+    symbol++;
+
+    // A zero probability is followed by a repeat count of further zeroes.
+    if (probability === 0) {
+      var run = 0;
+      while (symbol <= last && normalized[symbol] === 0) { run++; symbol++; }
+      while (run >= 3) { push(3, 2); run -= 3; }
+      push(run, 2);
+    }
+
+    while (remaining < threshold) {
+      nbBits--;
+      threshold >>= 1;
+    }
+  }
+
+  if (bitCount > 0) bits.push(accumulator & 0xFF);
+  return Buffer.from(bits);
+}
+
+/**
+ * Bits a distribution would spend coding these counts.
+ *
+ * An FSE-coded symbol costs about log2(tableSize / its share) bits, which is
+ * close enough to compare candidate tables without encoding each one.
+ */
+function estimateBits(counts, normalized, maxSymbol, accuracyLog) {
+  var tableSize = 1 << accuracyLog;
+  var bits = 0;
+
+  for (var s = 0; s <= maxSymbol; s++) {
+    if (counts[s] === 0) continue;
+
+    var share = normalized[s];
+    if (share === 0) return Infinity; // cannot code this symbol at all
+    if (share < 0) share = 1;         // "less than one" costs the most
+
+    bits += counts[s] * Math.log2(tableSize / share);
+  }
+  return bits;
+}
+
+/**
+ * Build a custom table, choosing the accuracy log by what it actually costs.
+ *
+ * A larger table models the distribution more closely but has to be
+ * transmitted, so the candidates are priced against each other rather than
+ * picked by a rule of thumb.
+ *
+ * @returns {{table: object, description: Buffer, bits: number}|null}
+ */
+function buildCustom(counts, maxSymbol, maxAccuracyLog, sequenceCount) {
+  var distinct = 0;
+  for (var s = 0; s <= maxSymbol; s++) {
+    if (counts[s] > 0) distinct++;
+  }
+
+  // The format requires at least two symbols with nonzero probability;
+  // a single symbol is expressed with RLE mode instead.
+  if (distinct < 2) return null;
+
+  var smallest = 5;
+  while ((1 << smallest) < distinct && smallest < maxAccuracyLog) smallest++;
+
+  var best = null;
+
+  for (var log = smallest; log <= maxAccuracyLog; log++) {
+    var normalized = normalize(counts, maxSymbol, log);
+    if (normalized === null) continue;
+
+    var highest = maxSymbol;
+    while (highest > 0 && normalized[highest] === 0) highest--;
+
+    var description = writeTableDescription(normalized, maxSymbol, log);
+    var cost = estimateBits(counts, normalized, maxSymbol, log) + description.length * 8;
+
+    if (best === null || cost < best.cost) {
+      best = {
+        cost: cost,
+        table: fse.buildCTable(normalized, log, highest),
+        description: description,
+        accuracyLog: log
+      };
+    }
+  }
+
+  if (best === null) return null;
+  return { table: best.table, description: best.description, accuracyLog: best.accuracyLog, bits: best.cost };
+}
+
+exports.normalize = normalize;
+exports.writeTableDescription = writeTableDescription;
+exports.chooseAccuracyLog = chooseAccuracyLog;
+exports.estimateBits = estimateBits;
+exports.buildCustom = buildCustom;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./fse":124,"buffer":22}],124:[function(require,module,exports){
+'use strict';
+
+// Finite State Entropy encoder (RFC 8878 Section 4.1).
+//
+// FSE assigns each symbol a set of states in a table of size 2^accuracyLog,
+// proportional to the symbol's normalised frequency. Encoding a symbol emits
+// some low bits of the current state and transitions to a new state. Because
+// the decoder walks the bitstream backward, symbols must be encoded in
+// reverse order and the final states flushed at the end.
+
+// Distance between successive slots when spreading symbols over the table.
+// Chosen so the walk visits every slot exactly once.
+function tableStep(tableSize) {
+  return (tableSize >> 1) + (tableSize >> 3) + 3;
+}
+
+/**
+ * Build an encoding table from a normalised distribution.
+ *
+ * A count of -1 marks a "less than one" probability: the symbol is reachable
+ * but costs the most bits, and it is placed in the high slots of the table.
+ */
+function buildCTable(normalized, accuracyLog, maxSymbol) {
+  var tableSize = 1 << accuracyLog;
+  var tableMask = tableSize - 1;
+  var step = tableStep(tableSize);
+
+  var tableSymbol = new Uint8Array(tableSize);
+  var highThreshold = tableSize - 1;
+
+  // Low-probability symbols occupy the top of the table, filled downward.
+  for (var s = 0; s <= maxSymbol; s++) {
+    if (normalized[s] === -1) tableSymbol[highThreshold--] = s;
+  }
+
+  // Everything else is spread across the remaining slots.
+  var position = 0;
+  for (var symbol = 0; symbol <= maxSymbol; symbol++) {
+    var freq = normalized[symbol];
+    for (var n = 0; n < freq; n++) {
+      tableSymbol[position] = symbol;
+      position = (position + step) & tableMask;
+      while (position > highThreshold) position = (position + step) & tableMask;
+    }
+  }
+
+  // Cumulative start index per symbol; a -1 count contributes one slot.
+  var cumul = new Uint32Array(maxSymbol + 2);
+  for (var u = 1; u <= maxSymbol + 1; u++) {
+    cumul[u] = cumul[u - 1] + (normalized[u - 1] === -1 ? 1 : normalized[u - 1]);
+  }
+
+  var nextState = new Uint16Array(tableSize);
+  var cursor = Uint32Array.from(cumul);
+  for (var i = 0; i < tableSize; i++) {
+    var sym = tableSymbol[i];
+    nextState[cursor[sym]++] = tableSize + i;
+  }
+
+  // Per-symbol transform. deltaNbBits packs the bit count so that
+  // (state + deltaNbBits) >> 16 yields how many bits to emit.
+  var deltaNbBits = new Int32Array(maxSymbol + 1);
+  var deltaFindState = new Int32Array(maxSymbol + 1);
+  var total = 0;
+
+  for (var t = 0; t <= maxSymbol; t++) {
+    var count = normalized[t];
+    if (count === 0) {
+      // Unused symbol: encoding one is a bug, but keep the slot well-formed.
+      deltaNbBits[t] = ((accuracyLog + 1) << 16) - (1 << accuracyLog);
+    } else if (count === -1 || count === 1) {
+      deltaNbBits[t] = (accuracyLog << 16) - (1 << accuracyLog);
+      deltaFindState[t] = total - 1;
+      total += 1;
+    } else {
+      var maxBitsOut = accuracyLog - highBit(count - 1);
+      var minStatePlus = count << maxBitsOut;
+      deltaNbBits[t] = (maxBitsOut << 16) - minStatePlus;
+      deltaFindState[t] = total - count;
+      total += count;
+    }
+  }
+
+  return {
+    accuracyLog: accuracyLog,
+    maxSymbol: maxSymbol,
+    nextState: nextState,
+    deltaNbBits: deltaNbBits,
+    deltaFindState: deltaFindState
+  };
+}
+
+function highBit(value) {
+  return 31 - Math.clz32(value);
+}
+
+/** Encoder state for one symbol stream. */
+function FseState(table) {
+  this.table = table;
+  this.value = 0;
+}
+
+// Seed the state from the first symbol encoded, which is the last symbol the
+// decoder will read.
+FseState.prototype.init = function (symbol) {
+  var t = this.table;
+  var nbBitsOut = (t.deltaNbBits[symbol] + (1 << 15)) >> 16;
+  var value = (nbBitsOut << 16) - t.deltaNbBits[symbol];
+  this.value = t.nextState[(value >>> nbBitsOut) + t.deltaFindState[symbol]];
+};
+
+FseState.prototype.encode = function (writer, symbol) {
+  var t = this.table;
+  var nbBitsOut = (this.value + t.deltaNbBits[symbol]) >> 16;
+  writer.addBits(this.value, nbBitsOut);
+  this.value = t.nextState[(this.value >>> nbBitsOut) + t.deltaFindState[symbol]];
+};
+
+// Write the final state so the decoder can start from it.
+FseState.prototype.flush = function (writer) {
+  writer.addBits(this.value, this.table.accuracyLog);
+};
+
+exports.buildCTable = buildCTable;
+exports.FseState = FseState;
+exports.tableStep = tableStep;
+exports.highBit = highBit;
+
+},{}],125:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Huffman decoding for literals (RFC 8878 Section 4.2).
+
+var fse = require('./fse');
+var fseDecode = require('./fse-decode');
+var BitReader = require('./bitstream').BitReader;
+
+// Zero bytes placed on each side of a stream so reads never fall outside it.
+var PAD = 4;
+
+/**
+ * Read a Huffman_Tree_Description.
+ * @returns {{nbBits: Uint8Array, maxBits: number, size: number}}
+ */
+function readTreeDescription(bytes, offset) {
+  var headerByte = bytes[offset];
+  var weights = new Uint8Array(256);
+  var described;
+  var size;
+
+  if (headerByte >= 128) {
+    // Direct representation: 4-bit weights, two per byte, high nibble first.
+    described = headerByte - 127;
+    var weightBytes = (described + 1) >> 1;
+    for (var i = 0; i < described; i++) {
+      var byte = bytes[offset + 1 + (i >> 1)];
+      weights[i] = (i & 1) === 0 ? (byte >> 4) : (byte & 0x0F);
+    }
+    size = 1 + weightBytes;
+  } else {
+    var decoded = readFseWeights(bytes, offset + 1, headerByte);
+    weights = decoded.weights;
+    described = decoded.count;
+    size = 1 + headerByte;
+  }
+
+  // The final symbol's weight is whatever completes the total to a power of
+  // two (Section 4.2.1).
+  var total = 0;
+  for (var s = 0; s < described; s++) {
+    if (weights[s] > 0) total += 1 << (weights[s] - 1);
+  }
+  if (total === 0) throw new Error('Huffman tree describes no symbols');
+
+  var maxBits = fse.highBit(total) + 1;
+  var leftover = (1 << maxBits) - total;
+  if (leftover <= 0 || (leftover & (leftover - 1)) !== 0) {
+    throw new Error('Huffman weights do not complete to a power of two');
+  }
+  weights[described] = fse.highBit(leftover) + 1;
+
+  var nbBits = new Uint8Array(256);
+  for (var t = 0; t <= described; t++) {
+    nbBits[t] = weights[t] === 0 ? 0 : maxBits + 1 - weights[t];
+  }
+
+  return { nbBits: nbBits, maxBits: maxBits, size: size };
+}
+
+/**
+ * Weights compressed with FSE, using two states that share one table and
+ * take turns (Section 4.2.1.2).
+ */
+function readFseWeights(bytes, offset, compressedSize) {
+  var description = fseDecode.readTableDescription(bytes, offset, 255, 6);
+  var table = fseDecode.buildDTable(description.normalized, description.accuracyLog, description.maxSymbol);
+
+  var streamStart = offset + description.size;
+  var streamEnd = offset + compressedSize;
+  var reader = new BitReader(bytes.subarray(streamStart, streamEnd));
+
+  var state1 = reader.readBits(table.accuracyLog);
+  var state2 = reader.readBits(table.accuracyLog);
+
+  var weights = new Uint8Array(256);
+  var count = 0;
+
+  // Section 4.2.1.2: the two states take turns. Bits past the end of the
+  // stream count as zero, and the read that overruns ends the series after
+  // one final symbol from the other state.
+  function advance(state) {
+    var bits = table.bits[state];
+    var next = table.base[state] + reader.peek(bits);
+    reader.skip(bits);
+    return next;
+  }
+
+  function overrun() {
+    return reader.remaining() < 0;
+  }
+
+  for (;;) {
+    if (count > 253) throw new Error('too many Huffman weights');
+
+    weights[count++] = table.symbol[state1];
+    state1 = advance(state1);
+    if (overrun()) {
+      weights[count++] = table.symbol[state2];
+      break;
+    }
+
+    weights[count++] = table.symbol[state2];
+    state2 = advance(state2);
+    if (overrun()) {
+      weights[count++] = table.symbol[state1];
+      break;
+    }
+  }
+
+  return { weights: weights, count: count };
+}
+
+/**
+ * Table mapping the next `maxBits` of the stream to a symbol and its length.
+ *
+ * A code sits in the high bits of that window, so every window sharing the
+ * code's prefix maps to the same symbol.
+ */
+function buildDecodeTable(nbBits, maxBits) {
+  var size = 1 << maxBits;
+  var symbol = new Uint8Array(size);
+  var bits = new Uint8Array(size);
+
+  // Canonical assignment, longest codes first, matching the encoder.
+  var code = 0;
+  for (var length = maxBits; length >= 1; length--) {
+    for (var s = 0; s < 256; s++) {
+      if (nbBits[s] !== length) continue;
+
+      var span = 1 << (maxBits - length);
+      var start = code * span;
+      for (var i = 0; i < span; i++) {
+        symbol[start + i] = s;
+        bits[start + i] = length;
+      }
+      code++;
+    }
+    code >>= 1;
+  }
+
+  return { symbol: symbol, bits: bits, maxBits: maxBits };
+}
+
+/**
+ * Decode `count` symbols from one stream.
+ *
+ * This is the hottest loop in decompression, so the bit extraction is inlined
+ * rather than going through BitReader: a code is at most 11 bits, so a 32-bit
+ * word always spans the window plus its offset. Positions near the start of
+ * the stream fall back to the reader, which pads with zeros.
+ */
+function decodeStream(bytes, table, count, out, outOffset) {
+  var reader = new BitReader(bytes);
+
+  // Pad both sides so a four-byte read is always in bounds; the loop then has
+  // no edge cases and stays tight.
+  var stream = Buffer.alloc(bytes.length + PAD * 2);
+  bytes.copy(stream, PAD);
+
+  var position = reader.pos + PAD * 8;
+
+  var maxBits = table.maxBits;
+  var mask = (1 << maxBits) - 1;
+  var symbols = table.symbol;
+  var lengths = table.bits;
+
+  for (var i = 0; i < count; i++) {
+    var low = position - maxBits + 1;
+    var byteIndex = low >> 3;
+
+    var word = stream[byteIndex] |
+      (stream[byteIndex + 1] << 8) |
+      (stream[byteIndex + 2] << 16) |
+      (stream[byteIndex + 3] << 24);
+    var index = (word >>> (low & 7)) & mask;
+
+    var length = lengths[index];
+    if (length === 0) throw new Error('invalid Huffman code in literals stream');
+
+    out[outOffset + i] = symbols[index];
+    position -= length;
+  }
+
+  return count;
+}
+
+exports.readTreeDescription = readTreeDescription;
+exports.buildDecodeTable = buildDecodeTable;
+exports.decodeStream = decodeStream;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./bitstream":116,"./fse":124,"./fse-decode":122,"buffer":22}],126:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Huffman coding for literals (RFC 8878 Section 4.2).
+//
+// Like FSE bitstreams, Huffman streams are read backward, so symbols are
+// emitted from the end of the input toward the start.
+
+var c = require('./constants');
+var BitWriter = require('./bitstream').BitWriter;
+
+var MAX_BITS = c.HUF_MAX_BITS; // 11
+
+/** Count occurrences of each byte. */
+function countFrequencies(src) {
+  var counts = new Uint32Array(256);
+  for (var i = 0; i < src.length; i++) counts[src[i]]++;
+  return counts;
+}
+
+/**
+ * Code lengths for a Huffman tree over `counts`, no longer than MAX_BITS.
+ *
+ * The tree must be complete: zstd deduces the final symbol's weight by
+ * completing to the next power of two, so the Kraft sum has to be exactly 1.
+ * Length limiting therefore both lengthens and shortens codes to land on it.
+ */
+function buildCodeLengths(counts) {
+  var present = [];
+  for (var s = 0; s < 256; s++) {
+    if (counts[s] > 0) present.push(s);
+  }
+  if (present.length === 0) return null;
+
+  var lengths = new Uint8Array(256);
+
+  // A single distinct symbol still needs one bit to be representable.
+  if (present.length === 1) {
+    lengths[present[0]] = 1;
+    return { lengths: lengths, maxBits: 1, present: present };
+  }
+
+  // Standard Huffman over a node list. Alphabets are at most 256 symbols, so
+  // a linear scan for the two smallest nodes is cheap enough.
+  var nodes = present.map(function (sym) {
+    return { weight: counts[sym], symbols: [sym], depth: 0 };
+  });
+
+  while (nodes.length > 1) {
+    var a = -1, b = -1;
+    for (var i = 0; i < nodes.length; i++) {
+      if (a === -1 || nodes[i].weight < nodes[a].weight) { b = a; a = i; }
+      else if (b === -1 || nodes[i].weight < nodes[b].weight) { b = i; }
+    }
+
+    var first = nodes[a], second = nodes[b];
+    first.symbols.forEach(function (sym) { lengths[sym]++; });
+    second.symbols.forEach(function (sym) { lengths[sym]++; });
+
+    var merged = {
+      weight: first.weight + second.weight,
+      symbols: first.symbols.concat(second.symbols),
+      depth: 0
+    };
+    nodes = nodes.filter(function (_, i) { return i !== a && i !== b; });
+    nodes.push(merged);
+  }
+
+  limitCodeLengths(lengths, present, MAX_BITS);
+
+  var maxBits = 0;
+  present.forEach(function (sym) { if (lengths[sym] > maxBits) maxBits = lengths[sym]; });
+
+  return { lengths: lengths, maxBits: maxBits, present: present };
+}
+
+// Clamp to maxBits, then restore Kraft equality by lengthening or shortening.
+function limitCodeLengths(lengths, present, maxBits) {
+  var target = Math.pow(2, maxBits);
+
+  present.forEach(function (sym) {
+    if (lengths[sym] > maxBits) lengths[sym] = maxBits;
+  });
+
+  function total() {
+    var sum = 0;
+    present.forEach(function (sym) { sum += Math.pow(2, maxBits - lengths[sym]); });
+    return sum;
+  }
+
+  var sum = total();
+
+  // Over budget: lengthen the longest codes still below the cap, which costs
+  // the least.
+  while (sum > target) {
+    var pick = -1;
+    present.forEach(function (sym) {
+      if (lengths[sym] < maxBits && (pick === -1 || lengths[sym] > lengths[pick])) pick = sym;
+    });
+    if (pick === -1) break;
+    sum -= Math.pow(2, maxBits - lengths[pick] - 1);
+    lengths[pick]++;
+  }
+
+  // Under budget: shorten codes, longest first, while they still fit.
+  var progress = true;
+  while (sum < target && progress) {
+    progress = false;
+    var best = -1;
+    present.forEach(function (sym) {
+      if (lengths[sym] <= 1) return;
+      var gain = Math.pow(2, maxBits - lengths[sym]);
+      if (sum + gain > target) return;
+      if (best === -1 || lengths[sym] > lengths[best]) best = sym;
+    });
+    if (best !== -1) {
+      sum += Math.pow(2, maxBits - lengths[best]);
+      lengths[best]--;
+      progress = true;
+    }
+  }
+}
+
+/**
+ * Assign canonical codes.
+ *
+ * Section 4.2.1.3: symbols sort by weight ascending - equivalently by code
+ * length descending - keeping natural order within a group, and codes are
+ * handed out sequentially starting from the longest.
+ */
+function assignCodes(lengths, maxBits) {
+  var codes = new Uint32Array(256);
+  var code = 0;
+
+  for (var bits = maxBits; bits >= 1; bits--) {
+    for (var sym = 0; sym < 256; sym++) {
+      if (lengths[sym] === bits) codes[sym] = code++;
+    }
+    code >>= 1;
+  }
+
+  return codes;
+}
+
+/**
+ * Huffman_Tree_Description, direct representation (Section 4.2.1.1).
+ *
+ * Weights are written as 4-bit fields, two per byte, high nibble first. The
+ * final present symbol's weight is implied, so it is not written.
+ */
+function writeTreeDescription(lengths, maxBits, present) {
+  var lastSymbol = present[present.length - 1];
+
+  // Direct representation cannot describe symbols above 127.
+  if (lastSymbol > 127) return null;
+
+  var count = lastSymbol; // weights for symbols 0..lastSymbol-1
+  var bytes = Buffer.alloc(1 + Math.ceil(count / 2));
+  bytes[0] = 127 + count;
+
+  for (var i = 0; i < count; i++) {
+    var weight = lengths[i] === 0 ? 0 : maxBits + 1 - lengths[i];
+    if (weight > 15) return null;
+    var index = 1 + (i >> 1);
+    if ((i & 1) === 0) bytes[index] |= weight << 4;
+    else bytes[index] |= weight;
+  }
+
+  return bytes;
+}
+
+/** Encode one stream, writing symbols in reverse so a backward read yields them in order. */
+function encodeStream(src, start, end, codes, lengths) {
+  var writer = new BitWriter(Math.max(64, (end - start) >> 1));
+  for (var i = end - 1; i >= start; i--) {
+    var sym = src[i];
+    writer.addBits(codes[sym], lengths[sym]);
+  }
+  return writer.close();
+}
+
+/**
+ * Huffman-compress a literals buffer.
+ * @returns {{tree: Buffer, streams: Buffer, streamCount: number}|null}
+ *   null when Huffman would not help or cannot represent this input.
+ */
+function compressLiterals(literals) {
+  if (literals.length < 8) return null;
+
+  var counts = countFrequencies(literals);
+  var built = buildCodeLengths(counts);
+  if (built === null) return null;
+
+  // A single distinct byte is an RLE literals block, handled by the caller.
+  if (built.present.length < 2) return null;
+
+  var tree = writeTreeDescription(built.lengths, built.maxBits, built.present);
+  if (tree === null) return null;
+
+  var codes = assignCodes(built.lengths, built.maxBits);
+
+  // Four streams let the decoder work on them in parallel, and are required
+  // once the literals exceed what a single-stream header can describe.
+  var useFour = literals.length >= 1024;
+
+  if (!useFour) {
+    var single = encodeStream(literals, 0, literals.length, codes, built.lengths);
+    return { tree: tree, streams: single, streamCount: 1 };
+  }
+
+  var segment = (literals.length + 3) >> 2;
+  var parts = [];
+  for (var i = 0; i < 4; i++) {
+    var start = i * segment;
+    var end = i === 3 ? literals.length : Math.min(start + segment, literals.length);
+    parts.push(encodeStream(literals, start, end, codes, built.lengths));
+  }
+
+  // Section 3.1.1.3.1.6: three little-endian sizes; the fourth is inferred.
+  var jump = Buffer.alloc(6);
+  jump.writeUInt16LE(parts[0].length, 0);
+  jump.writeUInt16LE(parts[1].length, 2);
+  jump.writeUInt16LE(parts[2].length, 4);
+
+  if (parts[0].length > 65535 || parts[1].length > 65535 || parts[2].length > 65535) return null;
+
+  return {
+    tree: tree,
+    streams: Buffer.concat([jump, parts[0], parts[1], parts[2], parts[3]]),
+    streamCount: 4
+  };
+}
+
+exports.compressLiterals = compressLiterals;
+exports.countFrequencies = countFrequencies;
+exports.buildCodeLengths = buildCodeLengths;
+exports.assignCodes = assignCodes;
+exports.MAX_BITS = MAX_BITS;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./bitstream":116,"./constants":118,"buffer":22}],127:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Zstandard compression in pure JavaScript.
+
+var c = require('./constants');
+var frame = require('./frame');
+var block = require('./block');
+var xxhash = require('./xxhash64');
+var matchFinder = require('./match');
+var dictionaryFormat = require('./dictionary');
+var stream = require('./stream');
+var decode = require('./decode');
+
+function toBytes(input) {
+  if (typeof input === 'string') return Buffer.from(input, 'utf8');
+  if (Buffer.isBuffer(input)) return input;
+  if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  if (input instanceof ArrayBuffer) return Buffer.from(input);
+  throw new TypeError('input must be a string, Buffer, TypedArray, DataView or ArrayBuffer');
+}
+
+/**
+ * Compress input into a Zstandard frame.
+ *
+ * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
+ * @param {{searchDepth?: number, windowSize?: number, checksum?: boolean}} [options]
+ * @returns {Buffer}
+ */
+function compress(input, options) {
+  options = options || {};
+  var src = toBytes(input);
+  var checksum = options.checksum === true;
+
+  // A dictionary is data that precedes the frame: matches may reach into it,
+  // and the decoder must be given the same bytes. A formal dictionary also
+  // carries its own starting repeat offsets and an identifier.
+  var parsed = options.dictionary ? dictionaryFormat.parse(toBytes(options.dictionary)) : null;
+  var dictionary = parsed ? parsed.content : null;
+
+  var parts = [frame.writeFrameHeader(src.length, {
+    checksum: checksum,
+    dictionaryId: parsed ? parsed.id : 0,
+    minimumWindow: dictionary ? dictionary.length + src.length : 0
+  })];
+
+  if (src.length === 0) {
+    parts.push(frame.writeBlockHeader(0, c.BLOCK_RAW, true));
+    if (checksum) parts.push(contentChecksum(src));
+    return Buffer.concat(parts);
+  }
+
+  // Repeat-offset history persists across Compressed_Blocks within a frame,
+  // and starts from the dictionary's values when it supplies them.
+  var reps = parsed ? parsed.reps.slice() : c.REPEAT_OFFSETS.slice();
+
+  // One index over the whole input, so a block can match into earlier ones.
+  // With a dictionary the index also covers the dictionary bytes, which sit
+  // immediately before the content.
+  var indexed = dictionary ? Buffer.concat([dictionary, src]) : src;
+  var base = dictionary ? dictionary.length : 0;
+
+  var finderOptions = options;
+  if (dictionary) {
+    finderOptions = Object.assign({}, options, {
+      windowSize: Math.max(options.windowSize || 0, indexed.length)
+    });
+  }
+  var finder = new matchFinder.MatchFinder(indexed, finderOptions);
+  finder.prime(base);
+
+  var offset = 0;
+  while (offset < src.length) {
+    var size = Math.min(c.BLOCK_SIZE_MAX, src.length - offset);
+    var last = offset + size >= src.length;
+    var encoded = block.encodeBlock(src.subarray(offset, offset + size), reps, options,
+      finder, base + offset, base + offset + size);
+    reps = encoded.reps;
+
+    // Block_Size counts the stored content. For RLE that is the repeat count,
+    // which is the regenerated size rather than the one stored byte.
+    var declared = encoded.type === c.BLOCK_RLE ? encoded.regeneratedSize : encoded.content.length;
+
+    parts.push(frame.writeBlockHeader(declared, encoded.type, last));
+    parts.push(encoded.content);
+    offset += size;
+  }
+
+  // Section 3.1.1.4: the frame ends with the low 32 bits of the content's
+  // XXH64, when the descriptor said one is present.
+  if (checksum) parts.push(contentChecksum(src));
+
+  return Buffer.concat(parts);
+}
+
+function contentChecksum(src) {
+  var out = Buffer.alloc(4);
+  out.writeUInt32LE(xxhash.checksum32(src), 0);
+  return out;
+}
+
+/**
+ * Decompress a Zstandard frame.
+ *
+ * Handles frames from any Zstandard encoder, and verifies the content
+ * checksum when the frame carries one.
+ *
+ * @param {string|Buffer|Uint8Array|DataView|ArrayBuffer} input
+ * @param {{dictionary?: string|Buffer|Uint8Array|DataView|ArrayBuffer}} [options]
+ * @returns {Buffer}
+ */
+function decompress(input, options) {
+  options = options || {};
+  return decode.decodeFrame(toBytes(input), {
+    dictionary: options.dictionary ? toBytes(options.dictionary) : undefined
+  });
+}
+
+exports.compress = compress;
+exports.decompress = decompress;
+exports.Compress = stream.Compress;
+exports.Decompress = stream.Decompress;
+exports.constants = c;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./block":117,"./constants":118,"./decode":119,"./dictionary":120,"./frame":121,"./match":129,"./stream":132,"./xxhash64":133,"buffer":22}],128:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Literals_Section encoding (RFC 8878 Section 3.1.1.3.1).
+
+var c = require('./constants');
+
+/**
+ * Raw_Literals_Block: the literals are stored uncompressed, preceded by a
+ * header carrying only Regenerated_Size.
+ */
+function writeRawLiterals(literals) {
+  var size = literals.length;
+  var header;
+
+  if (size <= 31) {
+    // Size_Format uses one bit; Regenerated_Size occupies bits 3-7.
+    header = Buffer.from([c.LITERALS_RAW | (0 << 2) | (size << 3)]);
+  } else if (size <= 4095) {
+    header = Buffer.from([
+      c.LITERALS_RAW | (1 << 2) | ((size & 0x0F) << 4),
+      (size >> 4) & 0xFF
+    ]);
+  } else if (size <= 1048575) {
+    header = Buffer.from([
+      c.LITERALS_RAW | (3 << 2) | ((size & 0x0F) << 4),
+      (size >> 4) & 0xFF,
+      (size >> 12) & 0xFF
+    ]);
+  } else {
+    throw new Error('literals section too large: ' + size);
+  }
+
+  return Buffer.concat([header, literals]);
+}
+
+/** RLE_Literals_Block: one byte repeated Regenerated_Size times. */
+function writeRleLiterals(byte, size) {
+  var header;
+  if (size <= 31) {
+    header = Buffer.from([c.LITERALS_RLE | (0 << 2) | (size << 3)]);
+  } else if (size <= 4095) {
+    header = Buffer.from([
+      c.LITERALS_RLE | (1 << 2) | ((size & 0x0F) << 4),
+      (size >> 4) & 0xFF
+    ]);
+  } else {
+    header = Buffer.from([
+      c.LITERALS_RLE | (3 << 2) | ((size & 0x0F) << 4),
+      (size >> 4) & 0xFF,
+      (size >> 12) & 0xFF
+    ]);
+  }
+  return Buffer.concat([header, Buffer.from([byte])]);
+}
+
+
+/**
+ * Compressed_Literals_Block header plus content (Section 3.1.1.3.1.1).
+ *
+ * Compressed_Size covers everything after the header: the tree description,
+ * the jump table when there are four streams, and the streams themselves.
+ *
+ * Fields are packed low bits first: Literals_Block_Type, Size_Format,
+ * Regenerated_Size, then Compressed_Size. The wider formats exceed 32 bits,
+ * so this uses arithmetic throughout rather than bitwise operators.
+ */
+function writeCompressedLiterals(content, regeneratedSize, streamCount) {
+  var compressedSize = content.length;
+  var sizeFormat, headerBytes, sizeBits;
+
+  if (streamCount === 1) {
+    if (regeneratedSize > 1023 || compressedSize > 1023) return null;
+    sizeFormat = 0; headerBytes = 3; sizeBits = 10;
+  } else if (regeneratedSize <= 1023 && compressedSize <= 1023) {
+    sizeFormat = 1; headerBytes = 3; sizeBits = 10;
+  } else if (regeneratedSize <= 16383 && compressedSize <= 16383) {
+    sizeFormat = 2; headerBytes = 4; sizeBits = 14;
+  } else if (regeneratedSize <= 262143 && compressedSize <= 262143) {
+    sizeFormat = 3; headerBytes = 5; sizeBits = 18;
+  } else {
+    return null;
+  }
+
+  var value = c.LITERALS_COMPRESSED +
+    sizeFormat * 4 +
+    regeneratedSize * 16 +
+    compressedSize * 16 * Math.pow(2, sizeBits);
+
+  return Buffer.concat([writeLE(value, headerBytes), content]);
+}
+
+// Little-endian across an arbitrary byte count, using arithmetic so values
+// wider than 32 bits stay exact.
+function writeLE(value, byteCount) {
+  var out = Buffer.alloc(byteCount);
+  for (var i = 0; i < byteCount; i++) {
+    out[i] = value % 256;
+    value = Math.floor(value / 256);
+  }
+  return out;
+}
+
+exports.writeCompressedLiterals = writeCompressedLiterals;
+
+exports.writeRawLiterals = writeRawLiterals;
+exports.writeRleLiterals = writeRleLiterals;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./constants":118,"buffer":22}],129:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// LZ77 match finder.
+//
+// A hash table maps four-byte prefixes to the most recent position holding
+// them, and a chain links older positions with the same hash. Two things
+// beyond a plain greedy search matter for ratio:
+//
+//   - Recently used offsets are tried first, because encoding one costs a
+//     couple of bits where a spelled-out offset costs a dozen or more.
+//   - Matching is lazy: after finding a match we check whether starting one
+//     byte later would do meaningfully better, and if so emit a literal and
+//     take the later match instead.
+
+var MIN_MATCH = require('./constants').MIN_MATCH;
+var repcodes = require('./repcodes');
+
+// Match length a repeat offset is worth giving up, in bytes.
+var REPEAT_BIAS = 4;
+
+// How much longer a later match must be before we skip a byte for it.
+var LAZY_MARGIN = 1;
+
+// A match this long is already worth taking. Searching past it costs more
+// than the handful of bytes a longer one might save.
+var GOOD_ENOUGH = 64;
+
+// Consecutive candidates that fail the first-byte check before the position
+// is written off. Chain links are scattered in memory, so walking them is
+// what dominates compression; giving up after a run of misses buys a fifth of
+// the time back for four hundredths of a percent of size.
+var MAX_MISSES = 16;
+
+var HASH_LOG = 18;
+var HASH_SIZE = 1 << HASH_LOG;
+
+function hash4(src, at) {
+  var v = (src[at] | (src[at + 1] << 8) | (src[at + 2] << 16) | (src[at + 3] << 24)) >>> 0;
+  return (Math.imul(v, 2654435761) >>> (32 - HASH_LOG));
+}
+
+/**
+ * Searches one buffer, keeping its index between calls so a later block can
+ * match against data in an earlier one.
+ */
+function MatchFinder(src, options) {
+  options = options || {};
+  this.src = src;
+  this.searchDepth = options.searchDepth || 32;
+  this.windowSize = options.windowSize || (1 << 22);
+  this.head = new Int32Array(HASH_SIZE).fill(-1);
+  this.chain = new Int32Array(src.length).fill(-1);
+}
+
+/**
+ * Find sequences covering src[start, end).
+ *
+ * Matches may reach back before `start`, into blocks already emitted, which
+ * is what makes a large input compress as one stream rather than as a series
+ * of independent blocks.
+ */
+/**
+ * Index everything before `upTo` without emitting sequences for it, so those
+ * bytes are reachable as match sources. Used for dictionary content.
+ */
+MatchFinder.prototype.prime = function (upTo) {
+  return this.index(0, upTo);
+};
+
+/**
+ * Index a range without searching it.
+ *
+ * A block skipped as incompressible still has to go into the index, or a
+ * later block that does repeat it would find nothing to match against.
+ */
+MatchFinder.prototype.index = function (from, to) {
+  var limit = Math.min(to, this.src.length - MIN_MATCH - 1);
+  for (var i = from; i < limit; i++) {
+    var h = hash4(this.src, i);
+    this.chain[i] = this.head[h];
+    this.head[h] = i;
+  }
+  return this;
+};
+
+MatchFinder.prototype.run = function (start, end, reps) {
+  return search(this.src, start, end, this.head, this.chain,
+    this.searchDepth, this.windowSize, (reps || repcodes.INITIAL).slice());
+};
+
+/** Convenience wrapper for compressing a standalone buffer. */
+function findSequences(src, options) {
+  options = options || {};
+  var finder = new MatchFinder(src, options);
+  return finder.run(0, src.length, options.reps);
+}
+
+// Scratch for the match search. Returning a pair from a function that runs
+// once per input byte allocated more than the search itself cost, so the
+// result is written here instead.
+var foundLength = 0;
+var foundOffset = 0;
+
+/** Length of the common prefix at `a` and `b`, up to `max` bytes. */
+function commonPrefix(src, a, b, max) {
+  var i = 0;
+  // Compare a word at a time while there is room, then finish byte-wise.
+  while (i + 4 <= max &&
+         src[a + i] === src[b + i] &&
+         src[a + i + 1] === src[b + i + 1] &&
+         src[a + i + 2] === src[b + i + 2] &&
+         src[a + i + 3] === src[b + i + 3]) {
+    i += 4;
+  }
+  while (i < max && src[a + i] === src[b + i]) i++;
+  return i;
+}
+
+/**
+ * Best match reachable from `at`, written into foundLength/foundOffset.
+ *
+ * Recently used offsets are tried first, and a slightly shorter match at one
+ * of them wins, because a repeat code costs a couple of bits where a
+ * spelled-out offset costs a dozen or more.
+ */
+function bestMatchAt(src, at, end, literalLength, reps, head, chain, searchDepth, windowSize) {
+  var ll0 = literalLength === 0 ? 1 : 0;
+  var max = end - at;
+
+  var repLength = 0;
+  var repOffset = 0;
+
+  for (var code = 1; code <= 3; code++) {
+    var index = code - 1 + ll0;
+    var candidateOffset = index === 3 ? reps[0] - 1 : reps[index];
+    if (candidateOffset <= 0 || candidateOffset > at) continue;
+
+    var from = at - candidateOffset;
+
+    // Screen on the first four bytes before scanning: most repeat offsets do
+    // not match here, and this runs three times per input position.
+    if (max < MIN_MATCH ||
+        src[from] !== src[at] ||
+        src[from + 1] !== src[at + 1] ||
+        src[from + 2] !== src[at + 2]) {
+      continue;
+    }
+
+    var repLen = commonPrefix(src, from, at, max);
+    if (repLen > repLength) {
+      repLength = repLen;
+      repOffset = candidateOffset;
+    }
+  }
+
+  // A long repeat is both the cheapest offset and plenty of coverage; there is
+  // nothing the hash chain can offer that beats it.
+  if (repLength >= GOOD_ENOUGH) {
+    foundLength = repLength;
+    foundOffset = repOffset;
+    return;
+  }
+
+  var bestLength = 0;
+  var bestOffset = 0;
+  var candidate = head[hash4(src, at)];
+  var tries = searchDepth;
+  var misses = 0;
+
+  while (candidate >= 0 && tries-- > 0) {
+    var offset = at - candidate;
+    if (offset > windowSize) break;
+
+    // Cheap rejection: the byte past the current best must match.
+    if (src[candidate + bestLength] !== src[at + bestLength]) {
+      if (++misses >= MAX_MISSES) break;
+    } else {
+      var length = commonPrefix(src, candidate, at, max);
+      if (length > bestLength) {
+        bestLength = length;
+        bestOffset = offset;
+        misses = 0;
+        if (bestLength >= GOOD_ENOUGH) break;
+      }
+    }
+    candidate = chain[candidate];
+  }
+
+  if (repLength >= MIN_MATCH && repLength + REPEAT_BIAS >= bestLength) {
+    foundLength = repLength;
+    foundOffset = repOffset;
+    return;
+  }
+
+  foundLength = bestLength;
+  foundOffset = bestOffset;
+}
+
+function search(src, start, end, head, chain, searchDepth, windowSize, reps) {
+  var sequences = [];
+  var literals = Buffer.alloc(end - start);
+  var literalCount = 0;
+
+  var anchor = start;
+  var pos = start;
+  var limit = end - MIN_MATCH - 1;
+
+  while (pos < limit) {
+    bestMatchAt(src, pos, end, pos - anchor, reps, head, chain, searchDepth, windowSize);
+
+    if (foundLength < MIN_MATCH) {
+      var h = hash4(src, pos);
+      chain[pos] = head[h];
+      head[h] = pos;
+      pos++;
+      continue;
+    }
+
+    var length = foundLength;
+    var offset = foundOffset;
+
+    // Lazy step: would starting one byte later pay for the extra literal?
+    // Not worth asking once the match is already long.
+    while (pos + 1 < limit && length < GOOD_ENOUGH) {
+      var hh = hash4(src, pos);
+      chain[pos] = head[hh];
+      head[hh] = pos;
+
+      bestMatchAt(src, pos + 1, end, pos + 1 - anchor, reps, head, chain, searchDepth, windowSize);
+      if (foundLength >= length + LAZY_MARGIN) {
+        length = foundLength;
+        offset = foundOffset;
+        pos++;
+      } else {
+        break;
+      }
+    }
+
+    var literalLength = pos - anchor;
+    src.copy(literals, literalCount, anchor, pos);
+    literalCount += literalLength;
+
+    sequences.push({
+      literalLength: literalLength,
+      offset: offset,
+      matchLength: length
+    });
+
+    reps = repcodes.resolve(offset, literalLength, reps).reps;
+
+    // Index every position inside the match so later searches can reach them.
+    var indexEnd = pos + length < limit ? pos + length : limit;
+    for (var i = pos; i < indexEnd; i++) {
+      var hi = hash4(src, i);
+      chain[i] = head[hi];
+      head[hi] = i;
+    }
+
+    pos += length;
+    anchor = pos;
+  }
+
+  // Anything after the final match is trailing literals with no sequence.
+  var tail = end - anchor;
+  if (tail > 0) {
+    src.copy(literals, literalCount, anchor, end);
+    literalCount += tail;
+  }
+
+  return {
+    sequences: sequences,
+    literals: literals.subarray(0, literalCount),
+    lastLiteralLength: tail
+  };
+}
+
+exports.findSequences = findSequences;
+exports.MatchFinder = MatchFinder;
+exports.hash4 = hash4;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./constants":118,"./repcodes":130,"buffer":22}],130:[function(require,module,exports){
+'use strict';
+
+// Repeat-offset history (RFC 8878 Section 3.1.1.5).
+//
+// Offset_Values 1-3 name a recently used offset rather than spelling one out,
+// which costs a couple of bits instead of a dozen or more. The match finder
+// and the sequence encoder must agree exactly on this state, so both use the
+// functions here.
+
+var INITIAL = [1, 4, 8];
+
+/**
+ * Offset a given repeat code resolves to, or 0 when it is unusable.
+ *
+ * With no literals in the sequence the three slots shift by one, and code 3
+ * then means "the most recent offset, minus one byte".
+ */
+function offsetForCode(code, reps, ll0) {
+  var index = code - 1 + ll0;
+  var value = index === 3 ? reps[0] - 1 : reps[index];
+  return value > 0 ? value : 0;
+}
+
+/** History after using a repeat code. Code 1 with literals changes nothing. */
+function updateForCode(reps, code, ll0) {
+  var index = code - 1 + ll0;
+  if (index === 0) return reps.slice();
+
+  var current = index === 3 ? reps[0] - 1 : reps[index];
+  return [current, reps[0], index >= 2 ? reps[1] : reps[2]];
+}
+
+/**
+ * Resolve an actual offset into what the bitstream will carry.
+ * @returns {{offBase: number, reps: number[]}} offBase is 1-3 for a repeat,
+ *   otherwise offset + 3.
+ */
+function resolve(offset, literalLength, reps) {
+  var ll0 = literalLength === 0 ? 1 : 0;
+
+  for (var code = 1; code <= 3; code++) {
+    if (offsetForCode(code, reps, ll0) === offset) {
+      return { offBase: code, reps: updateForCode(reps, code, ll0) };
+    }
+  }
+
+  return { offBase: offset + 3, reps: [offset, reps[0], reps[1]] };
+}
+
+exports.INITIAL = INITIAL;
+exports.resolve = resolve;
+exports.offsetForCode = offsetForCode;
+exports.updateForCode = updateForCode;
+
+},{}],131:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Sequences_Section encoding (RFC 8878 Section 3.1.1.3.2).
+
+var c = require('./constants');
+var fse = require('./fse');
+var BitWriter = require('./bitstream').BitWriter;
+var repcodes = require('./repcodes');
+var fseTable = require('./fse-table');
+
+// Predefined tables, built once. Symbol maxima follow the distributions.
+var LL_TABLE = fse.buildCTable(c.LL_DEFAULT_DISTRIBUTION, c.LL_DEFAULT_ACCURACY, c.LL_SYMBOL_MAX);
+var ML_TABLE = fse.buildCTable(c.ML_DEFAULT_DISTRIBUTION, c.ML_DEFAULT_ACCURACY, c.ML_SYMBOL_MAX);
+var OF_TABLE = fse.buildCTable(c.OF_DEFAULT_DISTRIBUTION, c.OF_DEFAULT_ACCURACY, 28);
+
+// The largest offset code the predefined distribution can represent.
+var OF_PREDEFINED_MAX = 28;
+
+function codeFor(baselines, value, max) {
+  // Baselines ascend, so the code is the last one not exceeding the value.
+  for (var i = max; i >= 0; i--) {
+    if (value >= baselines[i]) return i;
+  }
+  return 0;
+}
+
+function literalLengthCode(length) {
+  return length <= 15 ? length : codeFor(c.LL_BASELINE, length, c.LL_SYMBOL_MAX);
+}
+
+function matchLengthCode(length) {
+  return length <= 34 ? length - c.MIN_MATCH : codeFor(c.ML_BASELINE, length, c.ML_SYMBOL_MAX);
+}
+
+// Section 3.1.1.3.2: Offset_Value = (1 << code) + extra bits, and values 1-3
+// are reserved for repeat offsets, so a literal offset is stored plus three.
+function offsetCode(offset) {
+  return fse.highBit(offset + 3);
+}
+
+// Section 3.1.1.3.2: Number_of_Sequences is 1 to 3 bytes.
+function writeSequenceCount(count) {
+  if (count < 128) return Buffer.from([count]);
+  if (count < 0x7F00) return Buffer.from([(count >> 8) + 128, count & 0xFF]);
+  var rest = count - 0x7F00;
+  return Buffer.from([255, rest & 0xFF, (rest >> 8) & 0xFF]);
+}
+
+/**
+ * Encode sequences using the predefined FSE distributions.
+ *
+ * @param {Array} sequences
+ * @param {number[]} reps repeat-offset history entering this block
+ * @returns {{section: Buffer, reps: number[]}|null} null when these sequences
+ *   cannot be represented with the predefined tables.
+ */
+function encodeSequences(sequences, reps) {
+  reps = reps || repcodes.INITIAL.slice();
+
+  if (sequences.length === 0) {
+    return { section: Buffer.from([0]), reps: reps };
+  }
+
+  var count = sequences.length;
+  var llCodes = new Uint8Array(count);
+  var mlCodes = new Uint8Array(count);
+  var ofCodes = new Uint8Array(count);
+  var offBases = new Uint32Array(count);
+
+  // Offsets resolve in forward order, because each one depends on the history
+  // left by the sequences before it.
+  var history = reps.slice();
+  for (var i = 0; i < count; i++) {
+    var s = sequences[i];
+
+    if (s.literalLength > 131071 || s.matchLength > 131074) return null;
+
+    var resolved = repcodes.resolve(s.offset, s.literalLength, history);
+    history = resolved.reps;
+
+    offBases[i] = resolved.offBase;
+    llCodes[i] = literalLengthCode(s.literalLength);
+    mlCodes[i] = matchLengthCode(s.matchLength);
+    ofCodes[i] = fse.highBit(resolved.offBase);
+
+    if (ofCodes[i] > OF_PREDEFINED_MAX) return null;
+  }
+
+  // Choose how each symbol type is coded. A custom table costs bytes to
+  // transmit, so it only pays once there are enough sequences to amortise it.
+  var ll = chooseMode(llCodes, c.LL_SYMBOL_MAX, c.LL_FSE_ACCURACY_MAX, LL_TABLE, c.LL_DEFAULT_DISTRIBUTION, count);
+  var of = chooseMode(ofCodes, c.OF_SYMBOL_MAX, c.OF_FSE_ACCURACY_MAX, OF_TABLE, c.OF_DEFAULT_DISTRIBUTION, count);
+  var ml = chooseMode(mlCodes, c.ML_SYMBOL_MAX, c.ML_FSE_ACCURACY_MAX, ML_TABLE, c.ML_DEFAULT_DISTRIBUTION, count);
+
+  var writer = new BitWriter(1024);
+
+  var llState = new fse.FseState(ll.table);
+  var mlState = new fse.FseState(ml.table);
+  var ofState = new fse.FseState(of.table);
+
+  // The decoder reads backward, so encode from the last sequence to the
+  // first. States are seeded from the last sequence's symbols.
+  var last = count - 1;
+  mlState.init(mlCodes[last]);
+  ofState.init(ofCodes[last]);
+  llState.init(llCodes[last]);
+
+  writeExtras(writer, sequences[last], offBases[last], llCodes[last], mlCodes[last], ofCodes[last]);
+
+  for (var n = count - 2; n >= 0; n--) {
+    ofState.encode(writer, ofCodes[n]);
+    mlState.encode(writer, mlCodes[n]);
+    llState.encode(writer, llCodes[n]);
+    writeExtras(writer, sequences[n], offBases[n], llCodes[n], mlCodes[n], ofCodes[n]);
+  }
+
+  // Final states, in the order the decoder will read them back.
+  mlState.flush(writer);
+  ofState.flush(writer);
+  llState.flush(writer);
+
+  var bitstream = writer.close();
+
+  // Section 3.1.1.3.2.1: modes pack as literal lengths, offsets, match
+  // lengths; the low two bits are reserved and must be zero.
+  var modes = Buffer.from([(ll.mode << 6) | (of.mode << 4) | (ml.mode << 2)]);
+
+  // Tables follow the header in the order literal lengths, offsets, match
+  // lengths.
+  var parts = [writeSequenceCount(count), modes];
+  if (ll.description) parts.push(ll.description);
+  if (of.description) parts.push(of.description);
+  if (ml.description) parts.push(ml.description);
+  parts.push(bitstream);
+
+  return { section: Buffer.concat(parts), reps: history };
+}
+
+// Sequence count below which a transmitted table cannot pay for itself.
+var CUSTOM_TABLE_MIN_SEQUENCES = 24;
+
+/**
+ * Decide between Predefined_Mode, RLE_Mode and FSE_Compressed_Mode for one
+ * symbol type.
+ */
+function chooseMode(codes, maxSymbol, maxAccuracyLog, predefinedTable, predefinedDistribution, count) {
+  var counts = new Uint32Array(maxSymbol + 1);
+  var distinct = 0;
+  for (var i = 0; i < codes.length; i++) {
+    if (counts[codes[i]]++ === 0) distinct++;
+  }
+
+  // One symbol throughout: the table is that single value.
+  if (distinct === 1) {
+    var only = codes[0];
+    return {
+      mode: c.MODE_RLE,
+      description: Buffer.from([only]),
+      table: rleTable(only, maxSymbol)
+    };
+  }
+
+  // Price a transmitted table against the predefined distribution rather than
+  // assuming either is better. A custom table has to pay for itself.
+  var custom = count >= CUSTOM_TABLE_MIN_SEQUENCES
+    ? fseTable.buildCustom(counts, maxSymbol, maxAccuracyLog, count)
+    : null;
+
+  if (custom !== null) {
+    var predefinedBits = fseTable.estimateBits(counts, predefinedDistribution, maxSymbol, predefinedTable.accuracyLog);
+    if (custom.bits < predefinedBits) {
+      return { mode: c.MODE_FSE, description: custom.description, table: custom.table };
+    }
+  }
+
+  return { mode: c.MODE_PREDEFINED, description: null, table: predefinedTable };
+}
+
+// RLE_Mode still needs a table to drive the encoder, even though the stream
+// carries no bits for this symbol type.
+function rleTable(symbol, maxSymbol) {
+  var distribution = new Int16Array(maxSymbol + 1);
+  distribution[symbol] = 1;
+  return fse.buildCTable(distribution, 0, symbol);
+}
+
+// Extra bits carry the offset of a value above its code's baseline.
+function writeExtras(writer, seq, offBase, llCode, mlCode, ofCode) {
+  writer.addBits(seq.literalLength - c.LL_BASELINE[llCode], c.LL_BITS[llCode]);
+  writer.addBits(seq.matchLength - c.ML_BASELINE[mlCode], c.ML_BITS[mlCode]);
+  writer.addBits(offBase - Math.pow(2, ofCode), ofCode);
+}
+
+exports.encodeSequences = encodeSequences;
+exports.resolveOffset = repcodes.resolve;
+exports.literalLengthCode = literalLengthCode;
+exports.matchLengthCode = matchLengthCode;
+exports.offsetCode = offsetCode;
+exports.writeSequenceCount = writeSequenceCount;
+exports.OF_PREDEFINED_MAX = OF_PREDEFINED_MAX;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./bitstream":116,"./constants":118,"./fse":124,"./fse-table":123,"./repcodes":130,"buffer":22}],132:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// Streaming compression.
+//
+// Input arrives in pieces and blocks are emitted as soon as enough has
+// accumulated, so neither the whole input nor the whole output needs to be
+// held in memory. The frame header omits Frame_Content_Size, since the total
+// is not known when the header is written.
+
+var c = require('./constants');
+var frame = require('./frame');
+var block = require('./block');
+var matchFinder = require('./match');
+var repcodes = require('./repcodes');
+var xxhash = require('./xxhash64');
+var decode = require('./decode');
+
+/**
+ * @param {(chunk: Buffer, final: boolean) => void} onData receives each piece
+ *   of the frame as it is produced; `final` is true on the last call.
+ * @param {{searchDepth?: number, windowSize?: number, checksum?: boolean}} [options]
+ */
+function Compress(onData, options) {
+  if (typeof onData !== 'function') {
+    throw new TypeError('Compress requires a callback: new Compress((chunk, final) => ...)');
+  }
+
+  this.onData = onData;
+  this.options = options || {};
+  this.checksum = this.options.checksum === true;
+
+  this.pending = [];
+  this.pendingLength = 0;
+  this.reps = repcodes.INITIAL.slice();
+
+  // Bytes already emitted that a later block may still match against. Kept to
+  // one block's worth: enough to link neighbouring blocks without making each
+  // block re-index an unbounded history.
+  this.historyLimit = this.options.streamHistory === undefined
+    ? c.BLOCK_SIZE_MAX
+    : this.options.streamHistory;
+  this.history = Buffer.alloc(0);
+  this.hasher = this.checksum ? new xxhash.Xxh64Stream(0n) : null;
+  this.started = false;
+  this.finished = false;
+}
+
+/**
+ * Add input. Pass `final` on the last call to close the frame.
+ */
+Compress.prototype.push = function (chunk, final) {
+  if (this.finished) throw new Error('push after the stream was finished');
+
+  chunk = toBytes(chunk);
+
+  if (!this.started) {
+    this.started = true;
+    // Content size is unknown mid-stream, so the header carries a window
+    // descriptor instead of Frame_Content_Size.
+    this.onData(frame.writeFrameHeader(null, { checksum: this.checksum }), false);
+  }
+
+  if (chunk.length > 0) {
+    if (this.hasher) this.hasher.update(chunk);
+    this.pending.push(chunk);
+    this.pendingLength += chunk.length;
+  }
+
+  // Emit only while a full block is guaranteed not to be the last one, so
+  // the final block can carry the Last_Block flag.
+  while (this.pendingLength > c.BLOCK_SIZE_MAX) {
+    this._emit(this._take(c.BLOCK_SIZE_MAX), false);
+  }
+
+  if (final) {
+    this._emit(this._take(this.pendingLength), true);
+    this.finished = true;
+  }
+
+  return this;
+};
+
+/** Finish the frame without adding more input. */
+Compress.prototype.end = function () {
+  return this.push(Buffer.alloc(0), true);
+};
+
+Compress.prototype._take = function (size) {
+  var joined = Buffer.concat(this.pending, this.pendingLength);
+  var head = joined.subarray(0, size);
+  var tail = joined.subarray(size);
+
+  this.pending = tail.length > 0 ? [tail] : [];
+  this.pendingLength = tail.length;
+  return head;
+};
+
+Compress.prototype._emit = function (data, last) {
+  var encoded;
+
+  if (this.history.length > 0 && data.length > 0) {
+    // Index the retained history ahead of this block so matches can reach
+    // back into what has already been emitted.
+    var combined = Buffer.concat([this.history, data]);
+    var finder = new matchFinder.MatchFinder(combined, this.options);
+    finder.prime(this.history.length);
+    encoded = block.encodeBlock(data, this.reps, this.options,
+      finder, this.history.length, combined.length);
+  } else {
+    encoded = block.encodeBlock(data, this.reps, this.options);
+  }
+
+  this.reps = encoded.reps;
+
+  if (this.historyLimit > 0 && data.length > 0) {
+    var carried = Buffer.concat([this.history, data]);
+    this.history = carried.length > this.historyLimit
+      ? carried.subarray(carried.length - this.historyLimit)
+      : carried;
+  }
+
+  var declared = encoded.type === c.BLOCK_RLE ? encoded.regeneratedSize : encoded.content.length;
+  var header = frame.writeBlockHeader(declared, encoded.type, last);
+
+  if (!last) {
+    this.onData(Buffer.concat([header, encoded.content]), false);
+    return;
+  }
+
+  var parts = [header, encoded.content];
+  if (this.hasher) {
+    var trailer = Buffer.alloc(4);
+    trailer.writeUInt32LE(Number(this.hasher.digest() & 0xFFFFFFFFn), 0);
+    parts.push(trailer);
+  }
+  this.onData(Buffer.concat(parts), true);
+};
+
+function toBytes(input) {
+  if (input === undefined || input === null) return Buffer.alloc(0);
+  if (typeof input === 'string') return Buffer.from(input, 'utf8');
+  if (Buffer.isBuffer(input)) return input;
+  if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  if (input instanceof ArrayBuffer) return Buffer.from(input);
+  throw new TypeError('input must be a string, Buffer, TypedArray, DataView or ArrayBuffer');
+}
+
+/**
+ * Streaming decompression, mirroring {@link Compress}.
+ *
+ * Blocks are decoded as their bytes arrive rather than waiting for the whole
+ * frame.
+ */
+function Decompress(onData, options) {
+  if (typeof onData !== 'function') {
+    throw new TypeError('Decompress requires a callback: new Decompress((chunk, final) => ...)');
+  }
+  options = options || {};
+  this.inner = new decode.StreamingDecoder(onData, {
+    dictionary: options.dictionary ? toBytes(options.dictionary) : undefined
+  });
+}
+
+Decompress.prototype.push = function (chunk, final) {
+  this.inner.push(toBytes(chunk), !!final);
+  return this;
+};
+
+Decompress.prototype.end = function () {
+  return this.push(Buffer.alloc(0), true);
+};
+
+exports.Compress = Compress;
+exports.Decompress = Decompress;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"./block":117,"./constants":118,"./decode":119,"./frame":121,"./match":129,"./repcodes":130,"./xxhash64":133,"buffer":22}],133:[function(require,module,exports){
+(function (Buffer){(function (){
+'use strict';
+
+// XXH64, the hash Zstandard uses for the optional Content_Checksum
+// (RFC 8878 Section 3.1.1.1.4). The frame stores the low 32 bits.
+//
+// The algorithm is defined over 64-bit wrapping arithmetic, which JavaScript's
+// bitwise operators cannot express, so this uses BigInt masked to 64 bits.
+// It runs once per frame, so the cost is acceptable next to the match finder.
+
+var MASK = (1n << 64n) - 1n;
+
+var P1 = 11400714785074694791n;
+var P2 = 14029467366897019727n;
+var P3 = 1609587929392839161n;
+var P4 = 9650029242287828579n;
+var P5 = 2870177450012600261n;
+
+function rotl(value, bits) {
+  return ((value << BigInt(bits)) | (value >> BigInt(64 - bits))) & MASK;
+}
+
+function round(acc, input) {
+  acc = (acc + input * P2) & MASK;
+  acc = rotl(acc, 31);
+  return (acc * P1) & MASK;
+}
+
+function mergeRound(acc, value) {
+  var merged = round(0n, value);
+  acc = acc ^ merged;
+  return ((acc * P1) + P4) & MASK;
+}
+
+function read64(bytes, at) {
+  var low = BigInt(bytes.readUInt32LE(at));
+  var high = BigInt(bytes.readUInt32LE(at + 4));
+  return (high << 32n) | low;
+}
+
+/**
+ * @param {Buffer} input
+ * @param {bigint} [seed]
+ * @returns {bigint} the full 64-bit hash
+ */
+function xxhash64(input, seed) {
+  seed = seed === undefined ? 0n : BigInt(seed) & MASK;
+
+  var length = input.length;
+  var position = 0;
+  var hash;
+
+  if (length >= 32) {
+    var limit = length - 32;
+    var v1 = (seed + P1 + P2) & MASK;
+    var v2 = (seed + P2) & MASK;
+    var v3 = seed;
+    var v4 = (seed - P1) & MASK;
+
+    do {
+      v1 = round(v1, read64(input, position)); position += 8;
+      v2 = round(v2, read64(input, position)); position += 8;
+      v3 = round(v3, read64(input, position)); position += 8;
+      v4 = round(v4, read64(input, position)); position += 8;
+    } while (position <= limit);
+
+    hash = (rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18)) & MASK;
+    hash = mergeRound(hash, v1);
+    hash = mergeRound(hash, v2);
+    hash = mergeRound(hash, v3);
+    hash = mergeRound(hash, v4);
+  } else {
+    hash = (seed + P5) & MASK;
+  }
+
+  hash = (hash + BigInt(length)) & MASK;
+
+  while (position + 8 <= length) {
+    var k1 = round(0n, read64(input, position));
+    hash = hash ^ k1;
+    hash = ((rotl(hash, 27) * P1) + P4) & MASK;
+    position += 8;
+  }
+
+  if (position + 4 <= length) {
+    hash = hash ^ ((BigInt(input.readUInt32LE(position)) * P1) & MASK);
+    hash = ((rotl(hash, 23) * P2) + P3) & MASK;
+    position += 4;
+  }
+
+  while (position < length) {
+    hash = hash ^ ((BigInt(input[position]) * P5) & MASK);
+    hash = (rotl(hash, 11) * P1) & MASK;
+    position++;
+  }
+
+  hash = hash ^ (hash >> 33n);
+  hash = (hash * P2) & MASK;
+  hash = hash ^ (hash >> 29n);
+  hash = (hash * P3) & MASK;
+  hash = hash ^ (hash >> 32n);
+
+  return hash;
+}
+
+/** Low 32 bits, which is what a frame's Content_Checksum carries. */
+function checksum32(input) {
+  return Number(xxhash64(input, 0n) & 0xFFFFFFFFn);
+}
+
+/**
+ * Incremental XXH64, for hashing content that arrives in pieces.
+ *
+ * The core loop consumes 32 bytes at a time, so anything short of a full
+ * stripe is held back until the next update or the final digest.
+ */
+function Xxh64Stream(seed) {
+  seed = seed === undefined ? 0n : BigInt(seed) & MASK;
+  this.seed = seed;
+  this.v1 = (seed + P1 + P2) & MASK;
+  this.v2 = (seed + P2) & MASK;
+  this.v3 = seed;
+  this.v4 = (seed - P1) & MASK;
+  this.total = 0;
+  this.buffer = Buffer.alloc(32);
+  this.buffered = 0;
+}
+
+Xxh64Stream.prototype.update = function (chunk) {
+  this.total += chunk.length;
+  var position = 0;
+
+  if (this.buffered > 0) {
+    var wanted = 32 - this.buffered;
+    if (chunk.length < wanted) {
+      chunk.copy(this.buffer, this.buffered);
+      this.buffered += chunk.length;
+      return this;
+    }
+    chunk.copy(this.buffer, this.buffered, 0, wanted);
+    this._stripe(this.buffer, 0);
+    this.buffered = 0;
+    position = wanted;
+  }
+
+  while (position + 32 <= chunk.length) {
+    this._stripe(chunk, position);
+    position += 32;
+  }
+
+  var rest = chunk.length - position;
+  if (rest > 0) {
+    chunk.copy(this.buffer, 0, position, chunk.length);
+    this.buffered = rest;
+  }
+  return this;
+};
+
+Xxh64Stream.prototype._stripe = function (bytes, at) {
+  this.v1 = round(this.v1, read64(bytes, at));
+  this.v2 = round(this.v2, read64(bytes, at + 8));
+  this.v3 = round(this.v3, read64(bytes, at + 16));
+  this.v4 = round(this.v4, read64(bytes, at + 24));
+};
+
+Xxh64Stream.prototype.digest = function () {
+  var hash;
+
+  if (this.total >= 32) {
+    hash = (rotl(this.v1, 1) + rotl(this.v2, 7) + rotl(this.v3, 12) + rotl(this.v4, 18)) & MASK;
+    hash = mergeRound(hash, this.v1);
+    hash = mergeRound(hash, this.v2);
+    hash = mergeRound(hash, this.v3);
+    hash = mergeRound(hash, this.v4);
+  } else {
+    hash = (this.seed + P5) & MASK;
+  }
+
+  hash = (hash + BigInt(this.total)) & MASK;
+
+  var tail = this.buffer.subarray(0, this.buffered);
+  var position = 0;
+
+  while (position + 8 <= tail.length) {
+    hash = hash ^ round(0n, read64(tail, position));
+    hash = ((rotl(hash, 27) * P1) + P4) & MASK;
+    position += 8;
+  }
+
+  if (position + 4 <= tail.length) {
+    hash = hash ^ ((BigInt(tail.readUInt32LE(position)) * P1) & MASK);
+    hash = ((rotl(hash, 23) * P2) + P3) & MASK;
+    position += 4;
+  }
+
+  while (position < tail.length) {
+    hash = hash ^ ((BigInt(tail[position]) * P5) & MASK);
+    hash = (rotl(hash, 11) * P1) & MASK;
+    position++;
+  }
+
+  hash = hash ^ (hash >> 33n);
+  hash = (hash * P2) & MASK;
+  hash = hash ^ (hash >> 29n);
+  hash = (hash * P3) & MASK;
+  hash = hash ^ (hash >> 32n);
+
+  return hash;
+}
+
+exports.xxhash64 = xxhash64;
+exports.checksum32 = checksum32;
+exports.Xxh64Stream = Xxh64Stream;
+
+}).call(this)}).call(this,require("buffer").Buffer)
+},{"buffer":22}],134:[function(require,module,exports){
 (function (process,Buffer){(function (){
 'use strict';
 /* eslint camelcase: "off" */
@@ -19448,7 +22943,7 @@ Zlib.prototype._reset = function () {
 exports.Zlib = Zlib;
 
 }).call(this)}).call(this,require('_process'),require("buffer").Buffer)
-},{"./constants":118,"./errors":120,"_process":91,"assert":1,"buffer":22,"pako/lib/zlib/deflate.js":82,"pako/lib/zlib/inflate.js":84,"pako/lib/zlib/zstream":88}],117:[function(require,module,exports){
+},{"./constants":136,"./errors":138,"_process":91,"assert":1,"buffer":22,"pako/lib/zlib/deflate.js":82,"pako/lib/zlib/inflate.js":84,"pako/lib/zlib/zstream":88}],135:[function(require,module,exports){
 (function (process,Buffer){(function (){
 'use strict';
 
@@ -19723,7 +23218,7 @@ exports.BrotliEncoder = BrotliEncoder;
 exports.BrotliDecoder = BrotliDecoder;
 
 }).call(this)}).call(this,require('_process'),require("buffer").Buffer)
-},{"./constants":118,"./errors":120,"_process":91,"brotli/build/encode":7,"brotli/decompress":19,"buffer":22}],118:[function(require,module,exports){
+},{"./constants":136,"./errors":138,"_process":91,"brotli/build/encode":7,"brotli/decompress":19,"buffer":22}],136:[function(require,module,exports){
 'use strict';
 
 // Zlib, Brotli and Zstd constants, matching Node.js core `zlib.constants`.
@@ -19948,7 +23443,7 @@ exports.ZSTD_error_dstBuffer_null =                    74;
 exports.ZSTD_error_noForwardProgress_destFull =        80;
 exports.ZSTD_error_noForwardProgress_inputEmpty =      82;
 
-},{}],119:[function(require,module,exports){
+},{}],137:[function(require,module,exports){
 (function (Buffer){(function (){
 'use strict';
 
@@ -20004,7 +23499,7 @@ module.exports = function crc32(data, value) {
 };
 
 }).call(this)}).call(this,require("buffer").Buffer)
-},{"./errors":120,"buffer":22}],120:[function(require,module,exports){
+},{"./errors":138,"buffer":22}],138:[function(require,module,exports){
 'use strict';
 
 // Reproductions of the Node.js core errors that zlib throws, with matching
@@ -20091,11 +23586,6 @@ exports.methodNotImplemented = function (name) {
     'The ' + name + ' method is not implemented');
 };
 
-// Used where this package cannot reach parity at all, rather than where it
-// simply has not yet. The message says why, so callers are not left guessing.
-exports.notImplemented = function (message) {
-  return makeError(Error, 'ERR_METHOD_NOT_IMPLEMENTED', message);
-};
 
 // Shared expectation strings, kept here so the wording stays identical
 // everywhere it is used.
@@ -20104,7 +23594,7 @@ exports.BUFFER_PROP = 'an instance of Buffer, TypedArray, DataView, or ArrayBuff
 
 exports.determineSpecificType = determineSpecificType;
 
-},{}],121:[function(require,module,exports){
+},{}],139:[function(require,module,exports){
 (function (process){(function (){
 'use strict';
 
@@ -20411,7 +23901,7 @@ module.exports = ZlibBase;
 module.exports.closeHandle = closeHandle;
 
 }).call(this)}).call(this,require('_process'))
-},{"./constants":118,"./errors":120,"_process":91,"assert":1,"buffer":22,"stream":95,"util":114}],122:[function(require,module,exports){
+},{"./constants":136,"./errors":138,"_process":91,"assert":1,"buffer":22,"stream":95,"util":114}],140:[function(require,module,exports){
 (function (process){(function (){
 'use strict';
 
@@ -20815,11 +24305,12 @@ exports.zstdDecompressSync = convenienceSync(ZstdDecompress);
 exports.crc32 = crc32;
 
 }).call(this)}).call(this,require('_process'))
-},{"./binding":116,"./brotli-binding":117,"./constants":118,"./crc32":119,"./errors":120,"./zlib-base":121,"./zstd-binding":123,"_process":91,"assert":1,"buffer":22,"util":114}],123:[function(require,module,exports){
-(function (process){(function (){
+},{"./binding":134,"./brotli-binding":135,"./constants":136,"./crc32":137,"./errors":138,"./zlib-base":139,"./zstd-binding":141,"_process":91,"assert":1,"buffer":22,"util":114}],141:[function(require,module,exports){
+(function (process,Buffer){(function (){
 'use strict';
 
 var fzstd = require('fzstd');
+var zstdEncode = require('zstd-js');
 
 var constants = require('./constants');
 var errors = require('./errors');
@@ -20963,19 +24454,146 @@ ZstdDecoder.prototype.write = function (flush, input, in_off, in_len, out, out_o
   return this;
 };
 
-// There is no pure-JavaScript zstd encoder to bind to. Every WASM option
-// needs asynchronous initialization, which cannot back a *Sync API, and does
-// not run under Hermes - so compression fails loudly at construction rather
-// than pretending to work.
-function ZstdEncoder() {
-  throw errors.notImplemented(
-    'Zstd compression is not available in this package: there is no ' +
-    'pure-JavaScript zstd encoder. Zstd decompression is supported.');
+/**
+ * Zstd encoder binding, backed by zstd-js.
+ *
+ * zstd-js compresses a whole buffer at a time, so input accumulates here and
+ * the frame is produced at ZSTD_e_end, then handed out across as many
+ * writeSync calls as the output buffer takes - the same shape as the Brotli
+ * encoder above.
+ */
+function ZstdEncoder(mode) {
+  if (mode !== constants.ZSTD_COMPRESS) {
+    throw new TypeError('Bad argument: expected ZSTD_COMPRESS mode');
+  }
+
+  this.mode = mode;
+  this.init_done = false;
+  this.write_in_progress = false;
+  this.pending_close = false;
+  this.err = 0;
+
+  this.inputChunks = [];
+  this.inputLength = 0;
+  this.pending = null;
+  this.pendingOffset = 0;
+  this.finished = false;
+  this.params = {};
 }
+
+ZstdEncoder.prototype.init = function (params) {
+  if (params != null) {
+    var self = this;
+    Object.keys(params).forEach(function (key) {
+      var id = Number(key);
+      // Only the compression level is honoured; the rest are accepted so
+      // callers written against Node do not fail here.
+      if (id === constants.ZSTD_c_compressionLevel) {
+        self.params.level = params[key];
+      }
+    });
+  }
+  this.init_done = true;
+};
+
+ZstdEncoder.prototype.close = function () {
+  if (this.write_in_progress) {
+    this.pending_close = true;
+    return;
+  }
+  this.pending_close = false;
+  this.mode = constants.NONE;
+  this.inputChunks = [];
+  this.inputLength = 0;
+  this.pending = null;
+};
+
+ZstdEncoder.prototype.reset = function () {
+  this.inputChunks = [];
+  this.inputLength = 0;
+  this.pending = null;
+  this.pendingOffset = 0;
+  this.finished = false;
+  this.err = 0;
+};
+
+ZstdEncoder.prototype._error = function (message, errno) {
+  this.err = errno;
+  this.write_in_progress = false;
+  if (this.onerror) {
+    this.onerror(message, errno);
+  } else {
+    throw new Error(message);
+  }
+};
+
+// Hand out queued output. avail_out === 0 means there is more waiting.
+ZstdEncoder.prototype._drain = function (out, out_off, out_len) {
+  if (this.pending === null) return [0, out_len];
+
+  var remaining = this.pending.length - this.pendingOffset;
+  var n = Math.min(remaining, out_len);
+  this.pending.copy(out, out_off, this.pendingOffset, this.pendingOffset + n);
+  this.pendingOffset += n;
+
+  if (this.pendingOffset >= this.pending.length) {
+    this.pending = null;
+    this.pendingOffset = 0;
+  }
+
+  return [0, out_len - n];
+};
+
+ZstdEncoder.prototype.writeSync = function (flush, input, in_off, in_len, out, out_off, out_len) {
+  if (!this.init_done) {
+    throw new Error('write before init');
+  }
+
+  if (input && in_len > 0) {
+    this.inputChunks.push(input.slice(in_off, in_off + in_len));
+    this.inputLength += in_len;
+  }
+
+  if (flush === constants.ZSTD_e_end && !this.finished) {
+    this.finished = true;
+    var combined = Buffer.concat(this.inputChunks, this.inputLength);
+    this.inputChunks = [];
+    this.inputLength = 0;
+
+    try {
+      this.pending = zstdEncode.compress(combined);
+    } catch (err) {
+      this._error(err.message, constants.Z_ERRNO);
+      return [0, out_len];
+    }
+    this.pendingOffset = 0;
+  }
+
+  return this._drain(out, out_off, out_len);
+};
+
+ZstdEncoder.prototype.write = function (flush, input, in_off, in_len, out, out_off, out_len) {
+  var self = this;
+  this.write_in_progress = true;
+  process.nextTick(function () {
+    var result;
+    try {
+      result = self.writeSync(flush, input, in_off, in_len, out, out_off, out_len);
+    } catch (err) {
+      self.write_in_progress = false;
+      if (self.onerror) return self.onerror(err.message, self.err || constants.Z_ERRNO);
+      throw err;
+    }
+    self.write_in_progress = false;
+    if (result && self.callback) self.callback(result[0], result[1]);
+    if (self.pending_close) self.close();
+  });
+  return this;
+};
 
 exports.ZstdDecoder = ZstdDecoder;
 exports.ZstdEncoder = ZstdEncoder;
 
-}).call(this)}).call(this,require('_process'))
-},{"./constants":118,"./errors":120,"_process":91,"fzstd":46}]},{},[122])(122)
+}).call(this)}).call(this,require('_process'),require("buffer").Buffer)
+},{"./constants":136,"./errors":138,"_process":91,"buffer":22,"fzstd":46,"zstd-js":127}]},{},[140])(140)
 });

@@ -1,6 +1,7 @@
 'use strict';
 
 var fzstd = require('fzstd');
+var zstdEncode = require('zstd-js');
 
 var constants = require('./constants');
 var errors = require('./errors');
@@ -144,15 +145,142 @@ ZstdDecoder.prototype.write = function (flush, input, in_off, in_len, out, out_o
   return this;
 };
 
-// There is no pure-JavaScript zstd encoder to bind to. Every WASM option
-// needs asynchronous initialization, which cannot back a *Sync API, and does
-// not run under Hermes - so compression fails loudly at construction rather
-// than pretending to work.
-function ZstdEncoder() {
-  throw errors.notImplemented(
-    'Zstd compression is not available in this package: there is no ' +
-    'pure-JavaScript zstd encoder. Zstd decompression is supported.');
+/**
+ * Zstd encoder binding, backed by zstd-js.
+ *
+ * zstd-js compresses a whole buffer at a time, so input accumulates here and
+ * the frame is produced at ZSTD_e_end, then handed out across as many
+ * writeSync calls as the output buffer takes - the same shape as the Brotli
+ * encoder above.
+ */
+function ZstdEncoder(mode) {
+  if (mode !== constants.ZSTD_COMPRESS) {
+    throw new TypeError('Bad argument: expected ZSTD_COMPRESS mode');
+  }
+
+  this.mode = mode;
+  this.init_done = false;
+  this.write_in_progress = false;
+  this.pending_close = false;
+  this.err = 0;
+
+  this.inputChunks = [];
+  this.inputLength = 0;
+  this.pending = null;
+  this.pendingOffset = 0;
+  this.finished = false;
+  this.params = {};
 }
+
+ZstdEncoder.prototype.init = function (params) {
+  if (params != null) {
+    var self = this;
+    Object.keys(params).forEach(function (key) {
+      var id = Number(key);
+      // Only the compression level is honoured; the rest are accepted so
+      // callers written against Node do not fail here.
+      if (id === constants.ZSTD_c_compressionLevel) {
+        self.params.level = params[key];
+      }
+    });
+  }
+  this.init_done = true;
+};
+
+ZstdEncoder.prototype.close = function () {
+  if (this.write_in_progress) {
+    this.pending_close = true;
+    return;
+  }
+  this.pending_close = false;
+  this.mode = constants.NONE;
+  this.inputChunks = [];
+  this.inputLength = 0;
+  this.pending = null;
+};
+
+ZstdEncoder.prototype.reset = function () {
+  this.inputChunks = [];
+  this.inputLength = 0;
+  this.pending = null;
+  this.pendingOffset = 0;
+  this.finished = false;
+  this.err = 0;
+};
+
+ZstdEncoder.prototype._error = function (message, errno) {
+  this.err = errno;
+  this.write_in_progress = false;
+  if (this.onerror) {
+    this.onerror(message, errno);
+  } else {
+    throw new Error(message);
+  }
+};
+
+// Hand out queued output. avail_out === 0 means there is more waiting.
+ZstdEncoder.prototype._drain = function (out, out_off, out_len) {
+  if (this.pending === null) return [0, out_len];
+
+  var remaining = this.pending.length - this.pendingOffset;
+  var n = Math.min(remaining, out_len);
+  this.pending.copy(out, out_off, this.pendingOffset, this.pendingOffset + n);
+  this.pendingOffset += n;
+
+  if (this.pendingOffset >= this.pending.length) {
+    this.pending = null;
+    this.pendingOffset = 0;
+  }
+
+  return [0, out_len - n];
+};
+
+ZstdEncoder.prototype.writeSync = function (flush, input, in_off, in_len, out, out_off, out_len) {
+  if (!this.init_done) {
+    throw new Error('write before init');
+  }
+
+  if (input && in_len > 0) {
+    this.inputChunks.push(input.slice(in_off, in_off + in_len));
+    this.inputLength += in_len;
+  }
+
+  if (flush === constants.ZSTD_e_end && !this.finished) {
+    this.finished = true;
+    var combined = Buffer.concat(this.inputChunks, this.inputLength);
+    this.inputChunks = [];
+    this.inputLength = 0;
+
+    try {
+      this.pending = zstdEncode.compress(combined);
+    } catch (err) {
+      this._error(err.message, constants.Z_ERRNO);
+      return [0, out_len];
+    }
+    this.pendingOffset = 0;
+  }
+
+  return this._drain(out, out_off, out_len);
+};
+
+ZstdEncoder.prototype.write = function (flush, input, in_off, in_len, out, out_off, out_len) {
+  var self = this;
+  this.write_in_progress = true;
+  process.nextTick(function () {
+    var result;
+    try {
+      result = self.writeSync(flush, input, in_off, in_len, out, out_off, out_len);
+    } catch (err) {
+      self.write_in_progress = false;
+      if (self.onerror) return self.onerror(err.message, self.err || constants.Z_ERRNO);
+      throw err;
+    }
+    self.write_in_progress = false;
+    if (result && self.callback) self.callback(result[0], result[1]);
+    if (self.pending_close) self.close();
+  });
+  return this;
+};
 
 exports.ZstdDecoder = ZstdDecoder;
 exports.ZstdEncoder = ZstdEncoder;

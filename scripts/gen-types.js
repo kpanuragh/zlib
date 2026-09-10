@@ -22,7 +22,7 @@ var ASYNC_METHODS = [
   ['zstdDecompress', 'ZstdDecompress', 'Zstd']
 ];
 
-var UNSUPPORTED = { zstdCompress: true };
+var UNSUPPORTED = {};
 
 var out = [];
 function w(line) { out.push(line === undefined ? '' : line); }
@@ -127,10 +127,6 @@ w();
   w();
 });
 
-w('/**');
-w(' * Present for API parity only. Constructing this throws');
-w(' * ERR_METHOD_NOT_IMPLEMENTED: there is no pure-JavaScript zstd encoder.');
-w(' */');
 w('export class ZstdCompress extends ZlibBase {');
 w('  constructor(options?: ZstdOptions);');
 w('}');

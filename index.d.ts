@@ -119,10 +119,6 @@ export class BrotliDecompress extends ZlibBase {
   constructor(options?: BrotliOptions);
 }
 
-/**
- * Present for API parity only. Constructing this throws
- * ERR_METHOD_NOT_IMPLEMENTED: there is no pure-JavaScript zstd encoder.
- */
 export class ZstdCompress extends ZlibBase {
   constructor(options?: ZstdOptions);
 }
@@ -262,9 +258,6 @@ export function brotliDecompressSync(buffer: InputType, options?: BrotliOptions)
 
 /**
  * zstdCompress: returns a promise when no callback is supplied.
- *
- * @throws ERR_METHOD_NOT_IMPLEMENTED - zstd compression is not available
- * in a pure-JavaScript build. Decompression is supported.
  */
 export function zstdCompress(buffer: InputType, options: ZstdInfoOptions): Promise<InfoResult<ZstdCompress>>;
 export function zstdCompress(buffer: InputType, options: ZstdOptions): Promise<Buffer>;

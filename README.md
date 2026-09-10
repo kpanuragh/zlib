@@ -44,7 +44,7 @@ Pure JavaScript implementation of Node.js `zlib` module for React Native, browse
 | **DeflateRaw/InflateRaw** | Raw deflate without header | All |
 | **Unzip** | Auto-detect and decompress | All |
 | **Brotli** | Modern compression, better ratios | 11.7.0+ |
-| **Zstd** | Decompression only - see [Limitations](#limitations) | 22.15.0+ |
+| **Zstd** | Compression and decompression | 22.15.0+ |
 | **CRC32** | Checksum calculation | 22.2.0+ |
 | **Stream Support** | Node.js Transform streams | All |
 | **Sync, callback & promise APIs** | Promises are this package's own addition | All |
@@ -209,7 +209,7 @@ All async methods follow the pattern: `method(buffer[, options], callback)`
 | `zlib.brotliCompress(buffer[, options], callback)` | Compress using Brotli |
 | `zlib.brotliDecompress(buffer[, options], callback)` | Decompress Brotli |
 | `zlib.zstdDecompress(buffer[, options], callback)` | Decompress Zstd |
-| `zlib.zstdCompress(buffer[, options], callback)` | Throws - see [Limitations](#limitations) |
+| `zlib.zstdCompress(buffer[, options], callback)` | Compress using Zstd |
 
 Omit the callback and the same methods return a promise. Input may be a
 string, `Buffer`, `TypedArray`, `DataView` or `ArrayBuffer`.
@@ -242,7 +242,7 @@ All sync methods follow the pattern: `methodSync(buffer[, options])`
 | `zlib.brotliCompressSync(buffer[, options])` | Compress using Brotli |
 | `zlib.brotliDecompressSync(buffer[, options])` | Decompress Brotli |
 | `zlib.zstdDecompressSync(buffer[, options])` | Decompress Zstd |
-| `zlib.zstdCompressSync(buffer[, options])` | Throws - see [Limitations](#limitations) |
+| `zlib.zstdCompressSync(buffer[, options])` | Compress using Zstd |
 
 **Example:**
 
@@ -272,7 +272,7 @@ Create Transform streams for piping data.
 | `zlib.createBrotliCompress([options])` | Create Brotli compression stream |
 | `zlib.createBrotliDecompress([options])` | Create Brotli decompression stream |
 | `zlib.createZstdDecompress([options])` | Create Zstd decompression stream |
-| `zlib.createZstdCompress([options])` | Throws - see [Limitations](#limitations) |
+| `zlib.createZstdCompress([options])` | Create Zstd compression stream |
 
 **Example:**
 
@@ -300,7 +300,7 @@ Direct class constructors (also available via factory methods).
 | `zlib.BrotliCompress` | Brotli compression class |
 | `zlib.BrotliDecompress` | Brotli decompression class |
 | `zlib.ZstdDecompress` | Zstd decompression class |
-| `zlib.ZstdCompress` | Present for API parity; constructing it throws |
+| `zlib.ZstdCompress` | Zstd compression class |
 
 Every class also carries Node's instance API: `bytesWritten`, `bytesRead`,
 `close()`, `flush()`, `reset()`, `params()` and `destroy()`.
@@ -524,8 +524,6 @@ zlib.brotliCompressSync(fontData, {
 
 ### Zstd Options
 
-Decompression only. See [Limitations](#limitations).
-
 ```javascript
 {
   flush: zlib.constants.ZSTD_e_continue,
@@ -566,7 +564,6 @@ Thrown synchronously, from the sync, callback and promise forms alike.
 | `ERR_BUFFER_TOO_LARGE` | `RangeError` | Output exceeded `maxOutputLength` |
 | `ERR_BROTLI_INVALID_PARAM` | `RangeError` | Unknown key in a Brotli `params` object |
 | `ERR_ZSTD_INVALID_PARAM` | `RangeError` | Unknown key in a Zstd `params` object |
-| `ERR_METHOD_NOT_IMPLEMENTED` | `Error` | Zstd compression was attempted |
 | `ERR_ZLIB_INITIALIZATION_FAILED` | `Error` | The engine could not be initialised |
 
 ```javascript
@@ -1092,23 +1089,15 @@ console.log('Data preserved:', JSON.stringify(data) === JSON.stringify(decompres
 Three places where this package cannot match Node, stated plainly so you can
 decide whether they matter for your use.
 
-### Zstd compression is unavailable
+### Zstd compression is a separate implementation
 
-`zstdCompress`, `zstdCompressSync` and `createZstdCompress` exist so that code
-type-checks and feature-detects the same way, but calling them throws
-`ERR_METHOD_NOT_IMPLEMENTED`.
+Zstd compression is provided by [`zstd-js`](https://github.com/kpanuragh/zstd-js),
+a pure-JavaScript Zstandard encoder. It compresses to within a few percent of
+the reference implementation on most input, and about 1.8x larger on
+JSON-shaped data. Decompression is unaffected.
 
-There is no pure-JavaScript zstd encoder. Every option is a WebAssembly build,
-which needs asynchronous initialization - so it cannot back a `*Sync` method -
-and does not run under Hermes, the React Native engine this package targets.
-
-Decompression is fully supported, and `createZstdDecompress()` is genuinely
-incremental.
-
-```javascript
-zlib.zstdDecompressSync(payload);   // works
-zlib.zstdCompressSync(data);        // throws ERR_METHOD_NOT_IMPLEMENTED
-```
+There is no WebAssembly involved, so this works under Hermes like everything
+else here.
 
 ### Brotli compression buffers the whole stream
 
