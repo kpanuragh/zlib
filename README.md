@@ -1,5 +1,6 @@
 # react-zlib-js
 
+[![CI](https://github.com/kpanuragh/zlib/actions/workflows/ci.yml/badge.svg)](https://github.com/kpanuragh/zlib/actions/workflows/ci.yml)
 [![npm version](https://badge.fury.io/js/react-zlib-js.svg)](https://www.npmjs.com/package/react-zlib-js)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 

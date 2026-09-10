@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # The suite checks behaviour against Node's own zlib, including its
+    # Zstandard binding, which arrived in 22.15.
+    name: test on Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.15', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: npm ci
+
+      # Runs twice: once over src/, which Node loads, and once over the
+      # browserify bundle, which browsers and React Native load.
+      - run: npm test
+
+  bundle-is-current:
+    # index.js is committed, so it can drift from the source it was built
+    # from. Rebuilding and comparing is the only way to know it has not.
+    name: committed bundle matches src
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: Rebuild and compare
+        run: |
+          cp index.js /tmp/committed-bundle.js
+          npm run build
+          if ! cmp -s index.js /tmp/committed-bundle.js; then
+            echo "::error::index.js differs from a fresh build of src/. Run 'npm run build' and commit the result."
+            diff <(head -c 2000 /tmp/committed-bundle.js) <(head -c 2000 index.js) || true
+            exit 1
+          fi
+          echo "bundle is current"
+
+  generated-files-are-current:
+    # src/constants.js and index.d.ts are generated. If a generator changes
+    # without its output being regenerated, the two disagree silently.
+    name: generated files match their generators
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: Regenerate and compare
+        run: |
+          cp src/constants.js /tmp/constants.js
+          cp index.d.ts /tmp/index.d.ts
+          npm run build:constants
+          npm run build:types
+          cmp -s src/constants.js /tmp/constants.js || {
+            echo "::error::src/constants.js differs from scripts/gen-constants.js output"; exit 1; }
+          cmp -s index.d.ts /tmp/index.d.ts || {
+            echo "::error::index.d.ts differs from scripts/gen-types.js output"; exit 1; }
+          echo "generated files are current"
+
+  cross-platform:
+    name: test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - run: npm test
+
+  package:
+    name: packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: The published tarball must work on its own
+        run: |
+          npm pack
+          mkdir -p /tmp/consumer
+          cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE"/react-zlib-js-*.tgz
+          node -e "
+            const zlib = require('react-zlib-js');
+            const nodeZlib = require('zlib');
+            const data = Buffer.from('installed package check '.repeat(2000));
+
+            if (!zlib.gunzipSync(zlib.gzipSync(data)).equals(data)) throw new Error('gzip round-trip failed');
+            if (!Buffer.isBuffer(zlib.gzipSync('x'))) throw new Error('should return real Buffers under Node');
+            if (!zlib.brotliDecompressSync(zlib.brotliCompressSync(data)).equals(data)) throw new Error('brotli round-trip failed');
+            if (!zlib.zstdDecompressSync(nodeZlib.zstdCompressSync(data)).equals(data)) throw new Error('zstd decode failed');
+
+            const missing = Object.keys(nodeZlib.constants).filter(k => zlib.constants[k] !== nodeZlib.constants[k]);
+            if (missing.length) throw new Error('constants disagree with Node: ' + missing.join(', '));
+
+            console.log('tarball works, all ' + Object.keys(nodeZlib.constants).length + ' constants match');
+          "
