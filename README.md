@@ -1219,7 +1219,7 @@ console.log(decompressed.toString());
 
 ```bash
 # Clone repository
-git clone https://github.com/anuraghkp1/zlib.git
+git clone https://github.com/kpanuragh/zlib.git
 cd zlib
 
 # Install dependencies
@@ -1538,8 +1538,8 @@ SOFTWARE.
 ## Links
 
 - [npm Package](https://www.npmjs.com/package/react-zlib-js)
-- [GitHub Repository](https://github.com/anuraghkp1/zlib)
-- [Issue Tracker](https://github.com/anuraghkp1/zlib/issues)
+- [GitHub Repository](https://github.com/kpanuragh/zlib)
+- [Issue Tracker](https://github.com/kpanuragh/zlib/issues)
 - [Node.js zlib Documentation](https://nodejs.org/api/zlib.html)
 
 ---
