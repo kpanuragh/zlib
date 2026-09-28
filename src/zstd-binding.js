@@ -1,16 +1,16 @@
 'use strict';
 
-var fzstd = require('fzstd');
-var zstdEncode = require('zstd-js');
+
+var zstdCodec = require('zstd-js');
 
 var constants = require('./constants');
 var errors = require('./errors');
 
 var VALID_DECODER_PARAMS = [constants.ZSTD_d_windowLogMax];
 
-// Zstd decoder binding, backed by fzstd's incremental decoder. Unlike the
-// Brotli binding this one is genuinely streaming: input is handed to fzstd as
-// it arrives and output is queued as fzstd produces it.
+// Zstd decoder binding, backed by zstd-js. Unlike the Brotli binding this one
+// is genuinely streaming: input is handed over as it arrives and output is
+// queued as it is produced.
 function ZstdDecoder(mode) {
   if (mode !== constants.ZSTD_DECOMPRESS) {
     throw new TypeError('Bad argument: expected ZSTD_DECOMPRESS mode');
@@ -41,7 +41,7 @@ ZstdDecoder.prototype.init = function (params) {
 
 ZstdDecoder.prototype._createStream = function () {
   var self = this;
-  this.stream = new fzstd.Decompress(function (chunk, final) {
+  this.stream = new zstdCodec.Decompress(function (chunk, final) {
     if (chunk && chunk.length) self.pendingChunks.push(chunk);
     if (final) self.finished = true;
   });
@@ -112,7 +112,7 @@ ZstdDecoder.prototype.writeSync = function (flush, input, in_off, in_len, out, o
       : new Uint8Array(0);
 
     try {
-      // fzstd rejects a second final push, so only send one.
+      // The decoder rejects a second final push, so only send one.
       if (!this.pushedFinal) {
         this.stream.push(chunk, last);
         if (last) this.pushedFinal = true;
@@ -252,7 +252,7 @@ ZstdEncoder.prototype.writeSync = function (flush, input, in_off, in_len, out, o
     this.inputLength = 0;
 
     try {
-      this.pending = zstdEncode.compress(combined);
+      this.pending = zstdCodec.compress(combined);
     } catch (err) {
       this._error(err.message, constants.Z_ERRNO);
       return [0, out_len];

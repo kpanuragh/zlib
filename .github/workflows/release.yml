@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump'
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+  # Lets npm verify the publish came from this workflow, so no token is
+  # stored anywhere and the package carries a provenance attestation.
+  id-token: write
+
+jobs:
+  tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - run: npm ci
+
+      - name: The suite must pass before anything is tagged
+        run: npm test
+
+      - name: Bump and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version "${{ inputs.bump }}" -m "chore: release %s"
+          git push --follow-tags
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No registry-url on purpose: it writes an .npmrc expecting a token, and
+      # an empty one makes npm attempt token auth instead of using OIDC.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - run: npm ci
+
+      - name: The tag must match the version in package.json
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          declared="$(node -p 'require("./package.json").version')"
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::tag $tag does not match package.json version $declared"
+            exit 1
+          fi
+          echo "releasing $declared"
+
+      - name: Nothing ships untested
+        run: npm test
+
+      # The bundle is committed, so a stale one would ship silently.
+      - name: The committed bundle must match src
+        run: |
+          cp index.js /tmp/committed-bundle.js
+          npm run build
+          if ! cmp -s index.js /tmp/committed-bundle.js; then
+            echo "::error::index.js differs from a fresh build of src/. Run 'npm run build' and commit it."
+            exit 1
+          fi
+
+      # Trusted publishing needs a newer npm than Node bundles.
+      - run: npm install -g npm@latest
+
+      # Authenticated by OIDC through the trusted publisher configured for
+      # this package on npmjs.com. No token is stored anywhere.
+      - name: Publish
+        run: npm publish --provenance --access public
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --latest

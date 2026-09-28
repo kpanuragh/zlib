@@ -1091,8 +1091,8 @@ decide whether they matter for your use.
 
 ### Zstd compression is a separate implementation
 
-Zstd compression is provided by [`zstd-js`](https://github.com/kpanuragh/zstd-js),
-a pure-JavaScript Zstandard encoder. It compresses to within a few percent of
+Zstd is provided by [`zstd-js`](https://github.com/kpanuragh/zstd-js), a
+pure-JavaScript Zstandard codec, in both directions. It compresses to within a few percent of
 the reference implementation on most input, and about 1.8x larger on
 JSON-shaped data. Decompression is unaffected.
 
@@ -1239,6 +1239,21 @@ npm run test:src        # source only
 npm run test:bundle     # bundle only
 ```
 
+### Releasing
+
+Releases are automated. Either run the **Release** workflow from the Actions
+tab and pick a bump, or tag locally:
+
+```bash
+npm version patch   # bumps and tags, with no v prefix
+git push --follow-tags
+```
+
+Pushing the tag runs the suite against both entry points, checks the committed
+bundle still matches `src/`, publishes to npm with a provenance attestation,
+and opens the GitHub release. Publishing is authenticated by OpenID Connect
+through a trusted publisher on npmjs.com, so no token is stored here.
+
 ### Project Structure
 
 ```
@@ -1249,7 +1264,7 @@ zlib/
 │   ├── zlib-base.js      # Shared Transform: write loop, lifecycle, options
 │   ├── binding.js        # Deflate/inflate binding over pako
 │   ├── brotli-binding.js # Brotli binding over the brotli package
-│   ├── zstd-binding.js   # Zstd decode binding over fzstd
+│   ├── zstd-binding.js   # Zstd binding over zstd-js, both directions
 │   ├── constants.js      # All 176 constants (generated)
 │   ├── errors.js         # Node's ERR_* classes
 │   └── crc32.js          # CRC-32
@@ -1272,7 +1287,7 @@ native implementation in both directions.
 |---------|---------|
 | `pako` | Pure JS deflate/inflate implementation |
 | `brotli` | Pure JS Brotli implementation |
-| `fzstd` | Pure JS Zstd decompressor |
+| `zstd-js` | Pure JS Zstd, compression and decompression |
 | `browserify` | Bundle for browser (dev dependency) |
 
 ## Migration to v3.x
